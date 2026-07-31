@@ -7,11 +7,31 @@ import { Order, Product, CompanyProfile, CatalogProduct, QuoteEnquiry, ColorOpti
 import { INITIAL_CATALOG_PRODUCTS } from '../data/initialCatalog';
 import { parseColorList, resolveColorHex } from '../utils/colorUtils';
 import { DEFAULT_QUOTE_NOTES } from '../constants/quoteDefaults';
+import { EMBEDDED_APPS_SCRIPT_URL } from '../config';
 
 export { parseColorList, resolveColorHex };
 
+function levenshteinDistance(a: string, b: string): number {
+  if (a.length === 0) return b.length;
+  if (b.length === 0) return a.length;
+  const matrix = Array.from({ length: a.length + 1 }, (_, i) => [i]);
+  for (let j = 1; j <= b.length; j++) matrix[0][j] = j;
+
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      matrix[i][j] = Math.min(
+        matrix[i - 1][j] + 1,
+        matrix[i][j - 1] + 1,
+        matrix[i - 1][j - 1] + cost
+      );
+    }
+  }
+  return matrix[a.length][b.length];
+}
+
 /**
- * Case-insensitive, space-insensitive property accessor for Google Sheet JSON objects.
+ * Case-insensitive, space-insensitive, typo-tolerant property accessor for Google Sheet JSON objects.
  * Supports a single key string or an array of candidate keys.
  */
 function getProp(obj: any, key: string | string[]): any {
@@ -19,13 +39,54 @@ function getProp(obj: any, key: string | string[]): any {
   const keys = Array.isArray(key) ? key : [key];
   const cleanKeys = keys.map(k => k.toLowerCase().replace(/[^a-z0-9]/g, ''));
 
+  // 1. First pass: exact match on normalized alphanumeric key
   for (const k of Object.keys(obj)) {
     const cleanK = k.toLowerCase().replace(/[^a-z0-9]/g, '');
     if (cleanKeys.includes(cleanK)) {
-      return obj[k];
+      if (obj[k] !== undefined && obj[k] !== null && String(obj[k]).trim() !== '') {
+        return obj[k];
+      }
     }
   }
+
+  // 2. Second pass: typo-tolerant fuzzy matching (e.g. "Decription", "Bae Price", "Contact Peron", "Delivery Addre", "Uername", "Pacode", "Statu")
+  const SEMANTIC_KEYWORDS = ['email', 'person', 'number', 'phone', 'address', 'notes', 'price', 'name', 'status', 'portal', 'company', 'passcode', 'username', 'id'];
+
+  for (const k of Object.keys(obj)) {
+    const cleanK = k.toLowerCase().replace(/[^a-z0-9]/g, '');
+    if (!cleanK) continue;
+    const cleanKNoS = cleanK.replace(/s/g, '');
+
+    for (const ck of cleanKeys) {
+      if (!ck) continue;
+      const ckNoS = ck.replace(/s/g, '');
+
+      if (cleanKNoS === ckNoS) {
+        if (obj[k] !== undefined && obj[k] !== null && String(obj[k]).trim() !== '') {
+          return obj[k];
+        }
+      }
+
+      // Semantic conflict check: Do not match if cleanK and ck contain different keywords from SEMANTIC_KEYWORDS
+      const cleanKWords = SEMANTIC_KEYWORDS.filter(w => cleanK.includes(w));
+      const ckWords = SEMANTIC_KEYWORDS.filter(w => ck.includes(w));
+      const hasConflict = cleanKWords.some(w => !ckWords.includes(w)) || ckWords.some(w => !cleanKWords.includes(w));
+      if (hasConflict) continue;
+
+      if (levenshteinDistance(cleanK, ck) <= 2) {
+        if (obj[k] !== undefined && obj[k] !== null && String(obj[k]).trim() !== '') {
+          return obj[k];
+        }
+      }
+    }
+  }
+
   return undefined;
+}
+
+function resolveUrl(url?: string): string {
+  const cleaned = (url || '').trim();
+  return cleaned || EMBEDDED_APPS_SCRIPT_URL;
 }
 
 /**
@@ -37,10 +98,7 @@ export const sheetsService = {
    * Test if the Apps Script URL is valid and responds correctly.
    */
   async testConnection(url: string): Promise<boolean> {
-    if (!url) return false;
-    
-    // Clean up the URL
-    const cleanedUrl = url.trim();
+    const cleanedUrl = resolveUrl(url);
     
     try {
       const response = await fetch(`${cleanedUrl}?action=ping`, {
@@ -126,8 +184,56 @@ export const sheetsService = {
       
       const data = await response.json();
       if (Array.isArray(data)) {
-        return data as Order[];
-      }
+        return data.map(item => {
+          const rawStatus = getProp(item, ['Status', 'status', 'Statu']);
+          const portalId = String(getProp(item, ['PortalID', 'Portal ID', 'portalId']) || '');
+          const portalName = String(getProp(item, ['PortalName', 'Portal Name', 'portalName']) || '');
+          const orderId = String(getProp(item, ['OrderID', 'Order ID', 'id']) || '');
+          const isPortalOrder = orderId.startsWith('ord-portal-') || Boolean(portalId) || Boolean(portalName);
+
+          const rawStatusStr = String(rawStatus || '').trim();
+          let status: any = rawStatusStr;
+          if (!status) {
+            status = isPortalOrder ? 'Pending Approval' : 'Pending';
+          } else if (status === 'Pending Confirmation' || status === 'Pending Review') {
+            status = 'Pending Approval';
+          }
+
+          return {
+            id: orderId,
+            orderNumber: String(getProp(item, ['OrderNumber', 'Order Number', 'orderNumber']) || ''),
+            companyName: String(getProp(item, ['CompanyName', 'Company Name', 'companyName']) || ''),
+            contactEmail: String(getProp(item, ['ContactEmail', 'Contact Email', 'contactEmail', 'Email', 'CustomerEmail']) || ''),
+            contactPerson: String(getProp(item, ['ContactPerson', 'Contact Person', 'contactPerson', 'ContactPeron', 'CustomerName', 'Purchaser']) || ''),
+            contactNumber: String(getProp(item, ['ContactNumber', 'Contact Number', 'contactNumber', 'Phone', 'ContactPhone', 'CustomerPhone', 'Mobile']) || ''),
+            fbMessengerLink: String(getProp(item, ['FBMessengerLink', 'FB Messenger Link', 'fbMessengerLink', 'FacebookMessengerLink', 'FBMessenger', 'Messenger']) || ''),
+            deliveryAddress: String(getProp(item, ['DeliveryAddress', 'Delivery Address', 'deliveryAddress', 'DeliveryAddre', 'Address', 'DeliveryDept']) || ''),
+            poNumber: String(getProp(item, ['PONumber', 'PO Number', 'poNumber']) || ''),
+            totalAmount: Number(getProp(item, ['TotalAmount', 'Total Amount', 'totalAmount']) || 0),
+            status: status,
+            createdAt: String(getProp(item, ['CreatedAt', 'Created At', 'createdAt']) || new Date().toISOString()),
+            notes: String(getProp(item, ['Notes', 'notes', 'SpecialNotes', 'OrderNotes']) || ''),
+            portalId: portalId,
+            portalName: portalName,
+            items: (() => {
+            const rawItems = getProp(item, ['items', 'Items', 'OrderItems', 'Order Items']);
+            if (Array.isArray(rawItems)) {
+              return rawItems.map(it => ({
+                productId: String(getProp(it, ['ProductID', 'Product ID', 'productId']) || ''),
+                productName: String(getProp(it, ['ProductName', 'Product Name', 'productName']) || ''),
+                imageUrl: String(getProp(it, ['ImageURL', 'Image URL', 'imageUrl']) || ''),
+                quantity: Number(getProp(it, ['Quantity', 'quantity']) || 1),
+                price: Number(getProp(it, ['Price', 'price']) || 0),
+                selectedSize: String(getProp(it, ['SelectedSize', 'Selected Size', 'selectedSize']) || ''),
+                selectedColor: String(getProp(it, ['SelectedColor', 'Selected Color', 'selectedColor']) || ''),
+                customDetails: getProp(it, ['CustomDetails', 'Custom Details', 'customDetails'])
+              }));
+            }
+            return [];
+          })()
+        };
+      });
+    }
       return null;
     } catch (error) {
       console.error('Error fetching orders from Google Sheets:', error);
@@ -378,20 +484,21 @@ export const sheetsService = {
       if (!response.ok) return null;
       const item = await response.json();
       if (item) {
-        const hubName = getProp(item, 'HubName') || getProp(item, 'Hub Name');
-        if (hubName) {
-          return {
-            hubName: String(hubName),
-            shortHubName: String(getProp(item, 'ShortHubName') || getProp(item, 'Short Hub Name') || ''),
-            orderPrefix: String(getProp(item, 'OrderPrefix') || getProp(item, 'Order Prefix') || ''),
-            currencySymbol: String(getProp(item, 'CurrencySymbol') || getProp(item, 'Currency Symbol') || ''),
-            colorTheme: String(getProp(item, 'ColorTheme') || getProp(item, 'Color Theme') || 'classic_noir'),
-            adminUsername: String(getProp(item, 'AdminUsername') || getProp(item, 'Admin Username') || ''),
-            adminPasscode: String(getProp(item, 'AdminPasscode') || getProp(item, 'Admin Passcode') || ''),
-            adminEmail: String(getProp(item, 'AdminEmail') || getProp(item, 'Admin Email') || ''),
-            logoUrl: String(getProp(item, 'AppLogoURL') || getProp(item, 'App Logo URL') || getProp(item, 'LogoURL') || getProp(item, 'Logo URL') || '')
-          };
-        }
+        const hubName = getProp(item, ['HubName', 'Hub Name', 'hubName', 'Hub']) || 'ARH Print Hub';
+        const adminUsername = String(getProp(item, ['AdminUsername', 'Admin Username', 'AdminUser', 'Admin User', 'Username', 'User']) || '').trim();
+        const adminPasscode = String(getProp(item, ['AdminPasscode', 'Admin Passcode', 'AdminPassword', 'Admin Password', 'Passcode', 'Password', 'Pass']) || '').trim();
+        
+        return {
+          hubName: String(hubName),
+          shortHubName: String(getProp(item, ['ShortHubName', 'Short Hub Name', 'shortHubName']) || ''),
+          orderPrefix: String(getProp(item, ['OrderPrefix', 'Order Prefix', 'orderPrefix']) || ''),
+          currencySymbol: String(getProp(item, ['CurrencySymbol', 'Currency Symbol', 'currencySymbol']) || ''),
+          colorTheme: String(getProp(item, ['ColorTheme', 'Color Theme', 'colorTheme']) || 'classic_noir'),
+          adminUsername: adminUsername,
+          adminPasscode: adminPasscode,
+          adminEmail: String(getProp(item, ['AdminEmail', 'Admin Email', 'adminEmail']) || ''),
+          logoUrl: String(getProp(item, ['AppLogoURL', 'App Logo URL', 'LogoURL', 'Logo URL', 'logoUrl']) || '')
+        };
       }
       return null;
     } catch (error) {
@@ -708,7 +815,14 @@ export const sheetsService = {
           productIds: (() => {
             const val = getProp(item, ['ProductIDs', 'productIds', 'Product IDs']);
             if (!val) return [];
-            return String(val).split(',').map((s: string) => s.trim()).filter(Boolean);
+            const valStr = String(val).trim();
+            if (valStr.startsWith('[') && valStr.endsWith(']')) {
+              try {
+                const parsed = JSON.parse(valStr);
+                if (Array.isArray(parsed)) return parsed.map(s => String(s).trim()).filter(Boolean);
+              } catch (e) {}
+            }
+            return valStr.split(',').map((s: string) => s.trim()).filter(Boolean);
           })(),
           createdAt: String(getProp(item, ['CreatedAt', 'createdAt', 'Created At']) || new Date().toISOString()),
           updatedAt: String(getProp(item, ['UpdatedAt', 'updatedAt', 'Updated At']) || new Date().toISOString()),

@@ -219,7 +219,7 @@ function initSheets(ss) {
   
   // Headers definitions
   var headers = {
-    "Orders": ["Order ID", "Order Number", "Company Name", "Contact Email", "Contact Person", "Delivery Address", "PO Number", "Total Amount", "Status", "Created At", "Notes"],
+    "Orders": ["Order ID", "Order Number", "Company Name", "Contact Email", "Contact Person", "Contact Number", "FB Messenger Link", "Delivery Address", "PO Number", "Total Amount", "Status", "Created At", "Notes", "Portal ID", "Portal Name"],
     "OrderItems": ["Order ID", "Product ID", "Product Name", "Image URL", "Quantity", "Price", "Selected Size", "Selected Color", "Custom Details"],
     "Products": ["Product ID", "Name", "Category", "Description", "Image URL", "Base Price", "Original Price", "Min Quantity", "Unit", "Size Options", "Color Options", "Frequently Ordered", "Shipping Fee", "Image URLs", "Custom Fields"],
     "CatalogProducts": ["Product ID", "SKU", "Name", "Category", "Description", "Image URL", "Image URLs", "MOQ", "Lead Time", "Branding Methods", "Colors", "Sizes", "Status"],
@@ -287,12 +287,16 @@ function getOrdersWithItems(ss) {
       companyName: order.CompanyName || order["Company Name"],
       contactEmail: order.ContactEmail || order["Contact Email"],
       contactPerson: order.ContactPerson || order["Contact Person"],
+      contactNumber: order.ContactNumber || order["Contact Number"] || "",
+      fbMessengerLink: order.FBMessengerLink || order["FB Messenger Link"] || "",
       deliveryAddress: order.DeliveryAddress || order["Delivery Address"],
       poNumber: order.PONumber || order["PO Number"] || "",
       totalAmount: Number(order.TotalAmount || order["Total Amount"]),
-      status: order.Status || "Pending",
+      status: order.Status || "Pending Approval",
       createdAt: order.CreatedAt || order["Created At"],
       notes: order.Notes || "",
+      portalId: order.PortalID || order["Portal ID"] || order.portalId || "",
+      portalName: order.PortalName || order["Portal Name"] || order.portalName || "",
       items: orderItems
     };
   });
@@ -320,7 +324,7 @@ function saveNewOrder(ss, order) {
   var ordersSheet = ss.getSheetByName("Orders");
   var itemsSheet = ss.getSheetByName("OrderItems");
   
-  var expectedOrdersHeaders = ["Order ID", "Order Number", "Company Name", "Contact Email", "Contact Person", "Delivery Address", "PO Number", "Total Amount", "Status", "Created At", "Notes"];
+  var expectedOrdersHeaders = ["Order ID", "Order Number", "Company Name", "Contact Email", "Contact Person", "Contact Number", "FB Messenger Link", "Delivery Address", "PO Number", "Total Amount", "Status", "Created At", "Notes", "Portal ID", "Portal Name"];
   var ordersData = ensureHeaders(ordersSheet, expectedOrdersHeaders);
   var ordersHeaders = ordersData[0];
   
@@ -330,12 +334,16 @@ function saveNewOrder(ss, order) {
     "Company Name": order.companyName,
     "Contact Email": order.contactEmail,
     "Contact Person": order.contactPerson,
+    "Contact Number": order.contactNumber || "",
+    "FB Messenger Link": order.fbMessengerLink || "",
     "Delivery Address": order.deliveryAddress,
     "PO Number": order.poNumber || "",
     "Total Amount": order.totalAmount,
-    "Status": order.status || "Pending",
+    "Status": order.status || "Pending Approval",
     "Created At": order.createdAt,
-    "Notes": order.notes || ""
+    "Notes": order.notes || "",
+    "Portal ID": order.portalId || "",
+    "Portal Name": order.portalName || ""
   };
   
   var orderRow = [];
@@ -382,6 +390,10 @@ function saveProduct(ss, product) {
   var data = ensureHeaders(sheet, expectedHeaders);
   var headers = data[0];
   
+  if (!product) return { status: "error", message: "Missing product" };
+  var targetId = String(product.id || "").trim();
+  if (!targetId) return { status: "error", message: "Missing product ID" };
+
   var productIdIndex = -1;
   for (var c = 0; c < headers.length; c++) {
     if (headers[c].toString().toLowerCase().replace(/[^a-z0-9]/g, "") === "productid") {
@@ -393,20 +405,55 @@ function saveProduct(ss, product) {
   
   var rowIndex = -1;
   for (var i = 1; i < data.length; i++) {
-    if (data[i][productIdIndex] === product.id) {
+    if (String(data[i][productIdIndex]).trim() === targetId) {
       rowIndex = i + 1; // 1-based index
       break;
     }
   }
   
-  var sizeOptionsStr = product.sizeOptions ? product.sizeOptions.join(", ") : "";
-  var colorOptionsStr = product.colorOptions ? product.colorOptions.join(", ") : "";
-  var imageUrlsStr = product.imageUrls ? product.imageUrls.join(";||;") : "";
-  var customFieldsStr = product.customFields ? JSON.stringify(product.customFields) : "";
+  var sizeOptionsStr = "";
+  if (Array.isArray(product.sizeOptions)) {
+    sizeOptionsStr = product.sizeOptions.join(", ");
+  } else if (Array.isArray(product.sizes)) {
+    sizeOptionsStr = product.sizes.join(", ");
+  } else if (product.sizeOptions) {
+    sizeOptionsStr = String(product.sizeOptions);
+  } else if (product.sizes) {
+    sizeOptionsStr = String(product.sizes);
+  }
+
+  var colorOptionsStr = "";
+  if (Array.isArray(product.colorOptions)) {
+    colorOptionsStr = product.colorOptions.join(", ");
+  } else if (Array.isArray(product.colors)) {
+    colorOptionsStr = product.colors.map(function(c) {
+      return (typeof c === 'object' && c && c.name) ? c.name : String(c);
+    }).join(", ");
+  } else if (product.colorOptions) {
+    colorOptionsStr = String(product.colorOptions);
+  } else if (product.colors) {
+    colorOptionsStr = String(product.colors);
+  }
+
+  var imageUrlsStr = "";
+  if (Array.isArray(product.imageUrls)) {
+    imageUrlsStr = product.imageUrls.join(";||;");
+  } else if (product.imageUrls) {
+    imageUrlsStr = String(product.imageUrls);
+  }
+
+  var customFieldsStr = "";
+  if (product.customFields) {
+    if (typeof product.customFields === 'string') {
+      customFieldsStr = product.customFields;
+    } else {
+      try { customFieldsStr = JSON.stringify(product.customFields); } catch(e) {}
+    }
+  }
   
   var productMap = {
-    "Product ID": product.id,
-    "Name": product.name,
+    "Product ID": targetId,
+    "Name": product.name || "",
     "Category": product.category || "",
     "Description": product.description || "",
     "Image URL": product.imageUrl || "",
@@ -434,7 +481,7 @@ function saveProduct(ss, product) {
     sheet.appendRow(rowData);
   }
   
-  return { status: "success", productId: product.id };
+  return { status: "success", productId: targetId };
 }
 
 function saveCompany(ss, company) {
@@ -454,7 +501,7 @@ function saveCompany(ss, company) {
   
   var rowIndex = -1;
   for (var i = 1; i < data.length; i++) {
-    if (data[i][companyIdIndex] === company.id) {
+    if (String(data[i][companyIdIndex]).trim() === String(company.id).trim()) {
       rowIndex = i + 1;
       break;
     }
@@ -512,7 +559,7 @@ function savePortal(ss, portal) {
   
   var rowIndex = -1;
   for (var i = 1; i < data.length; i++) {
-    if (data[i][idIndex] === portal.id) {
+    if (String(data[i][idIndex]).trim() === String(portal.id).trim()) {
       rowIndex = i + 1;
       break;
     }
@@ -563,7 +610,7 @@ function deleteRowById(ss, sheetName, colHeader, targetId) {
   if (colIndex === -1) colIndex = 0;
   
   for (var i = 1; i < data.length; i++) {
-    if (data[i][colIndex] === targetId) {
+    if (String(data[i][colIndex]).trim() === String(targetId).trim()) {
       sheet.deleteRow(i + 1);
       return { status: "success", id: targetId, deleted: true };
     }
@@ -605,20 +652,26 @@ function updateOrderStatus(ss, orderId, status) {
   var headers = data[0];
   
   var idIndex = -1;
+  var orderNumIndex = -1;
   var statusIndex = -1;
   for (var c = 0; c < headers.length; c++) {
     var normH = headers[c].toString().toLowerCase().replace(/[^a-z0-9]/g, "");
     if (normH === "orderid") {
       idIndex = c;
-    } else if (normH === "status") {
+    } else if (normH === "ordernumber") {
+      orderNumIndex = c;
+    } else if (normH === "status" || normH.indexOf("status") !== -1) {
       statusIndex = c;
     }
   }
   if (idIndex === -1) idIndex = 0;
-  if (statusIndex === -1) statusIndex = 8;
+  if (statusIndex === -1) statusIndex = 10;
   
+  var cleanTargetId = String(orderId).trim();
   for (var i = 1; i < data.length; i++) {
-    if (data[i][idIndex] === orderId) {
+    var rowId = String(data[i][idIndex]).trim();
+    var rowOrderNum = orderNumIndex !== -1 ? String(data[i][orderNumIndex]).trim() : "";
+    if (rowId === cleanTargetId || (rowOrderNum && rowOrderNum === cleanTargetId)) {
       sheet.getRange(i + 1, statusIndex + 1).setValue(status);
       return { status: "success", orderId: orderId, updated: true };
     }
@@ -632,6 +685,10 @@ function saveCatalogProduct(ss, product) {
   var data = ensureHeaders(sheet, expectedHeaders);
   var headers = data[0];
   
+  if (!product) return { status: "error", message: "Missing product" };
+  var targetId = String(product.id || "").trim();
+  if (!targetId) return { status: "error", message: "Missing product ID" };
+
   var productIdIndex = -1;
   for (var c = 0; c < headers.length; c++) {
     if (headers[c].toString().toLowerCase().replace(/[^a-z0-9]/g, "") === "productid") {
@@ -643,21 +700,46 @@ function saveCatalogProduct(ss, product) {
   
   var rowIndex = -1;
   for (var i = 1; i < data.length; i++) {
-    if (data[i][productIdIndex] === product.id) {
+    if (String(data[i][productIdIndex]).trim() === targetId) {
       rowIndex = i + 1;
       break;
     }
   }
   
-  var brandingStr = product.brandingMethods ? product.brandingMethods.join(", ") : "";
-  var colorsStr = product.colors ? JSON.stringify(product.colors) : "";
-  var sizesStr = product.sizes ? product.sizes.join(", ") : "";
-  var imageUrlsStr = product.imageUrls ? product.imageUrls.join(";||;") : "";
+  var brandingStr = "";
+  if (Array.isArray(product.brandingMethods)) {
+    brandingStr = product.brandingMethods.join(", ");
+  } else if (product.brandingMethods) {
+    brandingStr = String(product.brandingMethods);
+  }
+
+  var colorsStr = "";
+  if (product.colors) {
+    if (typeof product.colors === 'string') {
+      colorsStr = product.colors;
+    } else {
+      try { colorsStr = JSON.stringify(product.colors); } catch(e) {}
+    }
+  }
+
+  var sizesStr = "";
+  if (Array.isArray(product.sizes)) {
+    sizesStr = product.sizes.join(", ");
+  } else if (product.sizes) {
+    sizesStr = String(product.sizes);
+  }
+
+  var imageUrlsStr = "";
+  if (Array.isArray(product.imageUrls)) {
+    imageUrlsStr = product.imageUrls.join(";||;");
+  } else if (product.imageUrls) {
+    imageUrlsStr = String(product.imageUrls);
+  }
   
   var productMap = {
-    "Product ID": product.id,
+    "Product ID": targetId,
     "SKU": product.sku || "",
-    "Name": product.name,
+    "Name": product.name || "",
     "Category": product.category || "",
     "Description": product.description || "",
     "Image URL": product.imageUrl || "",
@@ -681,7 +763,7 @@ function saveCatalogProduct(ss, product) {
     sheet.appendRow(rowData);
   }
   
-  return { status: "success", productId: product.id };
+  return { status: "success", productId: targetId };
 }
 
 function saveQuoteEnquiry(ss, enquiry) {
@@ -701,7 +783,7 @@ function saveQuoteEnquiry(ss, enquiry) {
   
   var rowIndex = -1;
   for (var i = 1; i < data.length; i++) {
-    if (data[i][enquiryIdIndex] === enquiry.id) {
+    if (String(data[i][enquiryIdIndex]).trim() === String(enquiry.id).trim()) {
       rowIndex = i + 1;
       break;
     }
@@ -772,7 +854,7 @@ function updateQuoteEnquiryStatus(ss, enquiryId, status) {
   if (statusIndex === -1) statusIndex = 14;
   
   for (var i = 1; i < data.length; i++) {
-    if (data[i][idIndex] === enquiryId) {
+    if (String(data[i][idIndex]).trim() === String(enquiryId).trim()) {
       sheet.getRange(i + 1, statusIndex + 1).setValue(status);
       return { status: "success", enquiryId: enquiryId, updated: true };
     }

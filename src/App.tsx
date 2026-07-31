@@ -10,6 +10,7 @@ import { INITIAL_PRODUCTS, INITIAL_COMPANIES, INITIAL_ORDERS, INITIAL_PORTALS } 
 import { INITIAL_CATALOG_PRODUCTS, INITIAL_QUOTE_ENQUIRIES, sanitizeCatalogProduct } from './data/initialCatalog';
 import { DEFAULT_QUOTE_NOTES } from './constants/quoteDefaults';
 import { sheetsService } from './lib/sheetsService';
+import { EMBEDDED_APPS_SCRIPT_URL } from './config';
 import Header from './components/Header';
 import ProductCatalog from './components/ProductCatalog';
 import BrowseProducts from './components/BrowseProducts';
@@ -257,7 +258,20 @@ export default function App() {
 
   const [appsScriptConfig, setAppsScriptConfig] = useState<AppsScriptConfig>(() => {
     const cached = localStorage.getItem('rp_apps_script_config');
-    return cached ? JSON.parse(cached) : { webAppUrl: '', isConnected: false };
+    let parsedConfig: AppsScriptConfig = cached ? JSON.parse(cached) : { webAppUrl: EMBEDDED_APPS_SCRIPT_URL, isConnected: true };
+
+    // Check if script URL was passed in query parameters (e.g., ?script=... or ?appsScriptUrl=...)
+    const params = new URLSearchParams(window.location.search);
+    const urlScript = params.get('script') || params.get('appsScriptUrl') || params.get('webAppUrl');
+    const envScript = (((import.meta as any).env?.VITE_APPS_SCRIPT_URL) as string) || '';
+
+    const effectiveUrl = (urlScript && urlScript.trim()) || parsedConfig.webAppUrl || (envScript && envScript.trim()) || EMBEDDED_APPS_SCRIPT_URL;
+    parsedConfig = {
+      webAppUrl: effectiveUrl.trim(),
+      isConnected: true
+    };
+    localStorage.setItem('rp_apps_script_config', JSON.stringify(parsedConfig));
+    return parsedConfig;
   });
 
   const [systemSettings, setSystemSettings] = useState<SystemSettings>(() => {
@@ -276,11 +290,24 @@ export default function App() {
     };
   });
 
-  // Client Authentication State
+  // Client Authentication State (Session-isolated so new windows/browsers/shared links land on sign-in window)
   const [loggedInUser, setLoggedInUser] = useState<{ role: 'admin' | 'client'; companyId?: string } | null>(() => {
-    const cached = localStorage.getItem('rp_logged_in_user');
-    return cached ? JSON.parse(cached) : null;
+    try {
+      localStorage.removeItem('rp_logged_in_user');
+      const cached = sessionStorage.getItem('rp_logged_in_user');
+      return cached ? JSON.parse(cached) : null;
+    } catch {
+      return null;
+    }
   });
+
+  useEffect(() => {
+    if (loggedInUser) {
+      sessionStorage.setItem('rp_logged_in_user', JSON.stringify(loggedInUser));
+    } else {
+      sessionStorage.removeItem('rp_logged_in_user');
+    }
+  }, [loggedInUser]);
 
   // Active Selected Company (Admin can change this to preview catalog, client is locked to their profile)
   const [selectedCompanyId, setSelectedCompanyId] = useState<string>(() => {
@@ -400,29 +427,98 @@ export default function App() {
       return;
     }
 
-    // 3. If not found locally yet, attempt direct fetch if Google Sheets is connected
+    // 3. If not found locally yet or if connected to Sheets, fetch live data from Google Sheets
     if (appsScriptConfig.isConnected && appsScriptConfig.webAppUrl) {
       setIsResolvingPortal(true);
-      sheetsService.fetchPortals(appsScriptConfig.webAppUrl).then(fetchedPortals => {
-        if (fetchedPortals && fetchedPortals.length > 0) {
-          setOrderPortals(prev => {
-            const map = new Map<string, OrderPortal>();
+      const url = appsScriptConfig.webAppUrl;
+      Promise.all([
+        sheetsService.fetchPortals(url),
+        sheetsService.fetchCompanies(url),
+        sheetsService.fetchProducts(url),
+        sheetsService.fetchCatalogProducts(url)
+      ]).then(([fetchedPortals, fetchedCompanies, fetchedProducts, fetchedCatalogProducts]) => {
+        if (fetchedProducts && fetchedProducts.length > 0) {
+          setProducts(prev => {
+            const map = new Map<string, Product>();
             prev.forEach(p => map.set(p.id, p));
-            fetchedPortals.forEach(p => map.set(p.id, p));
+            fetchedProducts.forEach(p => map.set(p.id, p));
             return Array.from(map.values());
           });
-          const fetchedMatch = fetchedPortals.find(p =>
-            p.shareToken?.toLowerCase() === tokenClean.toLowerCase() ||
-            p.id?.toLowerCase() === tokenClean.toLowerCase() ||
-            p.companyId?.toLowerCase() === tokenClean.toLowerCase()
+        }
+
+        if (fetchedCatalogProducts && fetchedCatalogProducts.length > 0) {
+          setCatalogProducts(prev => {
+            const map = new Map<string, CatalogProduct>();
+            prev.forEach(p => map.set(p.id, p));
+            fetchedCatalogProducts.forEach(p => map.set(p.id, p));
+            return Array.from(map.values());
+          });
+        }
+
+        let updatedCompaniesList = companies;
+        if (fetchedCompanies && fetchedCompanies.length > 0) {
+          const coMap = new Map<string, CompanyProfile>();
+          companies.forEach(c => coMap.set(c.id, c));
+          fetchedCompanies.forEach(c => coMap.set(c.id, sanitizeCompany(c)));
+          updatedCompaniesList = Array.from(coMap.values());
+          setCompanies(updatedCompaniesList);
+        }
+
+        let updatedPortalsList = orderPortals;
+        if (fetchedPortals && fetchedPortals.length > 0) {
+          const poMap = new Map<string, OrderPortal>();
+          orderPortals.forEach(p => poMap.set(p.id, p));
+          fetchedPortals.forEach(p => poMap.set(p.id, p));
+          updatedPortalsList = Array.from(poMap.values());
+          setOrderPortals(updatedPortalsList);
+        }
+
+        // Search in updated portals
+        let fetchedMatch = updatedPortalsList.find(p =>
+          p.shareToken?.toLowerCase() === tokenClean.toLowerCase() ||
+          p.id?.toLowerCase() === tokenClean.toLowerCase() ||
+          p.companyId?.toLowerCase() === tokenClean.toLowerCase()
+        );
+
+        // If no direct portal match, check updated companies
+        if (!fetchedMatch && updatedCompaniesList.length > 0) {
+          const matchedCo = updatedCompaniesList.find(c =>
+            c.id.toLowerCase() === tokenClean.toLowerCase() ||
+            c.username?.toLowerCase() === tokenClean.toLowerCase() ||
+            c.name?.toLowerCase() === tokenClean.toLowerCase() ||
+            tokenClean.toLowerCase().includes(c.id.toLowerCase()) ||
+            tokenClean.toLowerCase().includes((c.username || '').toLowerCase())
           );
-          if (fetchedMatch) {
-            setActivePublicPortal(fetchedMatch);
+
+          if (matchedCo) {
+            fetchedMatch = updatedPortalsList.find(p => p.companyId === matchedCo.id);
+            if (!fetchedMatch) {
+              const defaultPortal: OrderPortal = {
+                id: `portal-${matchedCo.id}`,
+                companyId: matchedCo.id,
+                companyName: matchedCo.name,
+                name: `${matchedCo.name} Corporate Storefront`,
+                description: `Official corporate merchandise & promotional ordering portal for ${matchedCo.name}.`,
+                status: 'Active',
+                productIds: matchedCo.enabledProductIds && matchedCo.enabledProductIds.length > 0
+                  ? matchedCo.enabledProductIds
+                  : (fetchedProducts || products).map(p => p.id),
+                createdAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString(),
+                shareToken: `portal-${matchedCo.username || matchedCo.id}`
+              };
+              fetchedMatch = defaultPortal;
+              setOrderPortals(prev => [...prev, defaultPortal]);
+            }
           }
+        }
+
+        if (fetchedMatch) {
+          setActivePublicPortal(fetchedMatch);
         }
         setIsResolvingPortal(false);
       }).catch(err => {
-        console.error('Error fetching portals for share token:', err);
+        console.error('Error fetching portals and companies for share token:', err);
         setIsResolvingPortal(false);
       });
     } else {
@@ -459,74 +555,123 @@ export default function App() {
 
   const [isSyncingSheets, setIsSyncingSheets] = useState(false);
   const [lastSyncedTime, setLastSyncedTime] = useState<string | null>(null);
+  const isSyncingRef = React.useRef(false);
 
   const syncWithSheets = async () => {
     if (appsScriptConfig.isConnected && appsScriptConfig.webAppUrl) {
+      if (isSyncingRef.current) return;
+      isSyncingRef.current = true;
       const url = appsScriptConfig.webAppUrl;
       setIsSyncingSheets(true);
       
       try {
         // 1. Fetch products
         const fetchedProducts = await sheetsService.fetchProducts(url);
-        if (fetchedProducts !== null) {
-          setProducts(fetchedProducts);
-        }
 
         // 2. Fetch companies
         const fetchedCompanies = await sheetsService.fetchCompanies(url);
-        if (fetchedCompanies !== null) {
+        if (fetchedCompanies !== null && fetchedCompanies.length > 0) {
           setCompanies(prevCompanies => {
-            const map = new Map<string, CompanyProfile>();
-            prevCompanies.forEach(co => map.set(co.id, co));
+            return fetchedCompanies.map(fc => {
+              const sanitizedFC = sanitizeCompany(fc);
+              const existing = prevCompanies.find(p => p.id === fc.id);
 
-            fetchedCompanies.forEach(fetchedCo => {
-              const existingLocal = map.get(fetchedCo.id);
-              if (existingLocal) {
-                const mergedCo: CompanyProfile = {
-                  ...existingLocal,
-                  name: (fetchedCo.name && fetchedCo.name.trim() !== '') ? fetchedCo.name : existingLocal.name,
-                  username: (fetchedCo.username && fetchedCo.username.trim() !== '') ? fetchedCo.username.trim().toLowerCase() : existingLocal.username,
-                  passcode: (fetchedCo.passcode && fetchedCo.passcode.trim() !== '') ? fetchedCo.passcode : existingLocal.passcode,
-                  contactPerson: (fetchedCo.contactPerson && fetchedCo.contactPerson.trim() !== '') ? fetchedCo.contactPerson : existingLocal.contactPerson,
-                  contactEmail: (fetchedCo.contactEmail && fetchedCo.contactEmail.trim() !== '') ? fetchedCo.contactEmail : existingLocal.contactEmail,
-                  contactPhone: (fetchedCo.contactPhone && fetchedCo.contactPhone.trim() !== '') ? fetchedCo.contactPhone : existingLocal.contactPhone,
-                  deliveryAddress: (fetchedCo.deliveryAddress && fetchedCo.deliveryAddress.trim() !== '') ? fetchedCo.deliveryAddress : existingLocal.deliveryAddress,
-                  logoUrl: (fetchedCo.logoUrl !== undefined && fetchedCo.logoUrl !== null && fetchedCo.logoUrl.trim() !== '') ? fetchedCo.logoUrl : existingLocal.logoUrl,
-                  poRequired: fetchedCo.poRequired !== undefined ? fetchedCo.poRequired : existingLocal.poRequired,
-                  enabledProductIds: (fetchedCo.enabledProductIds && fetchedCo.enabledProductIds.length > 0)
-                    ? fetchedCo.enabledProductIds
-                    : existingLocal.enabledProductIds,
-                  customProducts: (fetchedCo.customProducts && fetchedCo.customProducts.length > 0)
-                    ? fetchedCo.customProducts
-                    : existingLocal.customProducts
-                };
-                map.set(fetchedCo.id, sanitizeCompany(mergedCo));
-              } else {
-                map.set(fetchedCo.id, sanitizeCompany(fetchedCo));
+              let passcode = sanitizedFC.passcode;
+              let username = sanitizedFC.username;
+
+              if (existing) {
+                if (existing.passcode && existing.passcode.trim() !== '') {
+                  // If fetched passcode is default or empty, preserve user-updated passcode
+                  const defaultPass = `${sanitizedFC.username.substring(0, 4)}2026`;
+                  if (!sanitizedFC.passcode || sanitizedFC.passcode === defaultPass || sanitizedFC.passcode === 'acme2026') {
+                    passcode = existing.passcode;
+                  }
+                }
+                if (existing.username && existing.username.trim() !== '') {
+                  if (!sanitizedFC.username || sanitizedFC.username === 'client') {
+                    username = existing.username;
+                  }
+                }
               }
-            });
 
-            return Array.from(map.values()).map(sanitizeCompany);
+              return {
+                ...sanitizedFC,
+                username,
+                passcode
+              };
+            });
+          });
+        }
+
+        // 3. Merge products from fetchedProducts and company customProducts
+        if (fetchedProducts !== null || fetchedCompanies !== null) {
+          setProducts(prevProducts => {
+            const map = new Map<string, Product>();
+            prevProducts.forEach(p => map.set(p.id, p));
+            if (fetchedProducts) {
+              fetchedProducts.forEach(p => map.set(p.id, p));
+            }
+            if (fetchedCompanies) {
+              fetchedCompanies.forEach(c => {
+                if (Array.isArray(c.customProducts)) {
+                  c.customProducts.forEach(cp => {
+                    if (cp && cp.id) map.set(cp.id, cp);
+                  });
+                }
+              });
+            }
+            return Array.from(map.values());
           });
         }
 
         // 3. Fetch orders
         const fetchedOrders = await sheetsService.fetchOrders(url);
         if (fetchedOrders !== null) {
-          setOrders(fetchedOrders);
+          setOrders(prevOrders => {
+            const fetchedIds = new Set(fetchedOrders.map(o => o.id));
+            const unsyncedLocal = prevOrders.filter(o => !fetchedIds.has(o.id));
+
+            const localMap = new Map<string, Order>(prevOrders.map(o => [o.id, o]));
+            const mergedFetched = fetchedOrders.map(fo => {
+              const local = localMap.get(fo.id);
+              if (local) {
+                // If order was approved or updated locally, do not revert it to 'Pending Approval' if Google Sheets returns stale status
+                if (local.status !== 'Pending Approval' && (fo.status === 'Pending Approval' || fo.status === 'Pending')) {
+                  return { ...fo, status: local.status };
+                }
+              }
+              return fo;
+            });
+
+            return [...unsyncedLocal, ...mergedFetched];
+          });
         }
 
         // 4. Fetch admin settings
         const fetchedSettings = await sheetsService.fetchAdminSettings(url);
         if (fetchedSettings) {
-          const currentAdminUser = fetchedSettings.adminUsername || localStorage.getItem('rp_admin_username') || systemSettings.adminUsername || 'admin';
-          const currentAdminPass = fetchedSettings.adminPasscode || localStorage.getItem('rp_admin_passcode') || systemSettings.adminPasscode || 'admin123';
+          const storedAdminUser = localStorage.getItem('rp_admin_username');
+          const storedAdminPass = localStorage.getItem('rp_admin_passcode');
+
+          let currentAdminUser = 'admin';
+          if (storedAdminUser && storedAdminUser.trim() !== '') {
+            currentAdminUser = storedAdminUser.trim();
+          } else if (fetchedSettings.adminUsername && fetchedSettings.adminUsername.trim() !== '') {
+            currentAdminUser = fetchedSettings.adminUsername.trim();
+          }
+
+          let currentAdminPass = 'admin123';
+          if (storedAdminPass && storedAdminPass.trim() !== '') {
+            currentAdminPass = storedAdminPass.trim();
+          } else if (fetchedSettings.adminPasscode && fetchedSettings.adminPasscode.trim() !== '' && fetchedSettings.adminPasscode.trim() !== 'admin123') {
+            currentAdminPass = fetchedSettings.adminPasscode.trim();
+          }
 
           setSystemSettings({
-            hubName: fetchedSettings.hubName,
-            shortHubName: fetchedSettings.shortHubName,
-            orderPrefix: fetchedSettings.orderPrefix,
-            currencySymbol: fetchedSettings.currencySymbol,
+            hubName: fetchedSettings.hubName || 'ARH Print Hub',
+            shortHubName: fetchedSettings.shortHubName || 'ARH',
+            orderPrefix: fetchedSettings.orderPrefix || 'ARH-2026',
+            currencySymbol: fetchedSettings.currencySymbol || 'Php',
             colorTheme: fetchedSettings.colorTheme || 'classic_noir',
             adminEmail: fetchedSettings.adminEmail || '',
             logoUrl: fetchedSettings.logoUrl || '',
@@ -568,6 +713,7 @@ export default function App() {
         console.error('Error syncing with Google Sheets:', err);
       } finally {
         setIsSyncingSheets(false);
+        isSyncingRef.current = false;
       }
     }
   };
@@ -575,6 +721,17 @@ export default function App() {
   // Pull live data from Sheets on load or config change
   useEffect(() => {
     syncWithSheets();
+  }, [appsScriptConfig.isConnected, appsScriptConfig.webAppUrl]);
+
+  // Auto-refresh every 20 seconds to fetch data from Google Sheets automatically
+  useEffect(() => {
+    if (!appsScriptConfig.isConnected || !appsScriptConfig.webAppUrl) return;
+
+    const intervalId = setInterval(() => {
+      syncWithSheets();
+    }, 20000);
+
+    return () => clearInterval(intervalId);
   }, [appsScriptConfig.isConnected, appsScriptConfig.webAppUrl]);
 
   // Ensure default active tab is appropriate for logged-in user
@@ -608,16 +765,60 @@ export default function App() {
     setSelectedCompanyId(co.id);
 
     if (appsScriptConfig.isConnected && appsScriptConfig.webAppUrl) {
-      sheetsService.saveCompany(appsScriptConfig.webAppUrl, co);
+      const url = appsScriptConfig.webAppUrl;
+      sheetsService.saveCompany(url, co);
+      if (Array.isArray(co.customProducts)) {
+        co.customProducts.forEach(cp => {
+          sheetsService.saveProduct(url, cp);
+        });
+      }
+    }
+
+    if (Array.isArray(co.customProducts) && co.customProducts.length > 0) {
+      setProducts(prev => {
+        const map = new Map<string, Product>();
+        prev.forEach(p => map.set(p.id, p));
+        co.customProducts!.forEach(cp => map.set(cp.id, cp));
+        return Array.from(map.values());
+      });
     }
   };
 
   const handleUpdateCompany = (updatedCo: CompanyProfile) => {
     const sanitized = sanitizeCompany(updatedCo);
+
+    // Track deleted custom products and sync deletion with Google Sheets
+    const oldCompany = companies.find(c => c.id === sanitized.id);
+    if (oldCompany && Array.isArray(oldCompany.customProducts)) {
+      const newCustomIds = new Set((sanitized.customProducts || []).map(p => p.id));
+      oldCompany.customProducts.forEach(oldCp => {
+        if (!newCustomIds.has(oldCp.id)) {
+          if (appsScriptConfig.isConnected && appsScriptConfig.webAppUrl) {
+            sheetsService.deleteProduct(appsScriptConfig.webAppUrl, oldCp.id);
+          }
+        }
+      });
+    }
+
     setCompanies(prev => prev.map(c => c.id === sanitized.id ? sanitized : c));
 
     if (appsScriptConfig.isConnected && appsScriptConfig.webAppUrl) {
-      sheetsService.saveCompany(appsScriptConfig.webAppUrl, sanitized);
+      const url = appsScriptConfig.webAppUrl;
+      sheetsService.saveCompany(url, sanitized);
+      if (Array.isArray(sanitized.customProducts)) {
+        sanitized.customProducts.forEach(cp => {
+          sheetsService.saveProduct(url, cp);
+        });
+      }
+    }
+
+    if (Array.isArray(sanitized.customProducts) && sanitized.customProducts.length > 0) {
+      setProducts(prev => {
+        const map = new Map<string, Product>();
+        prev.forEach(p => map.set(p.id, p));
+        sanitized.customProducts!.forEach(cp => map.set(cp.id, cp));
+        return Array.from(map.values());
+      });
     }
   };
 
@@ -677,27 +878,31 @@ export default function App() {
   };
 
   const handleUpdateOrders = async (newOrders: Order[]) => {
-    // 1. Sync deletions (works for both online/offline)
-    for (const oldOrd of orders) {
-      const stillExists = newOrders.some(newOrd => newOrd.id === oldOrd.id);
-      if (!stillExists) {
-        if (appsScriptConfig.isConnected && appsScriptConfig.webAppUrl) {
-          await sheetsService.deleteOrder(appsScriptConfig.webAppUrl, oldOrd.id);
-        }
-      }
-    }
-
-    // 2. Sync status changes (works for both online/offline)
-    for (const newOrd of newOrders) {
-      const oldOrd = orders.find(o => o.id === newOrd.id);
-      if (oldOrd && oldOrd.status !== newOrd.status) {
-        if (appsScriptConfig.isConnected && appsScriptConfig.webAppUrl) {
-          await sheetsService.updateOrderStatus(appsScriptConfig.webAppUrl, newOrd.id, newOrd.status);
-        }
-      }
-    }
-
+    // 1. Update React state immediately for instant feedback and localStorage persistence
     setOrders(newOrders);
+
+    // 2. Sync changes asynchronously with Google Sheets
+    if (appsScriptConfig.isConnected && appsScriptConfig.webAppUrl) {
+      const url = appsScriptConfig.webAppUrl;
+
+      // Sync deletions
+      for (const oldOrd of orders) {
+        const stillExists = newOrders.some(newOrd => newOrd.id === oldOrd.id);
+        if (!stillExists) {
+          sheetsService.deleteOrder(url, oldOrd.id).catch(console.error);
+        }
+      }
+
+      // Sync status updates & new orders
+      for (const newOrd of newOrders) {
+        const oldOrd = orders.find(o => o.id === newOrd.id);
+        if (!oldOrd) {
+          sheetsService.saveOrder(url, newOrd).catch(console.error);
+        } else if (oldOrd.status !== newOrd.status) {
+          sheetsService.updateOrderStatus(url, newOrd.id, newOrd.status).catch(console.error);
+        }
+      }
+    }
   };
 
   const handleUpdateSystemSettings = (newSettings: SystemSettings) => {
@@ -726,13 +931,39 @@ export default function App() {
   };
 
   const handleForceSyncAll = async (): Promise<boolean> => {
-    if (!appsScriptConfig.isConnected || !appsScriptConfig.webAppUrl) {
+    const url = appsScriptConfig.webAppUrl?.trim();
+    if (!url) {
       return false;
     }
-    const url = appsScriptConfig.webAppUrl;
     try {
-      // 1. Sync all products
-      for (const p of products) {
+      // 1. Sync all products (master products + company custom products + showcase catalog products)
+      const allProductsMap = new Map<string, Product>();
+      products.forEach(p => allProductsMap.set(p.id, p));
+      companies.forEach(co => {
+        if (Array.isArray(co.customProducts)) {
+          co.customProducts.forEach(cp => allProductsMap.set(cp.id, cp));
+        }
+      });
+      catalogProducts.forEach(cp => {
+        const productAsB2b: Product = {
+          id: cp.id,
+          name: cp.name,
+          category: (cp.category || 'Uniforms') as any,
+          description: cp.description || '',
+          imageUrl: cp.imageUrl || '',
+          basePrice: cp.basePrice || 0,
+          minQuantity: cp.moq || 1,
+          unit: 'pcs',
+          leadTime: cp.leadTime || '7-10 Business Days',
+          sizeOptions: cp.sizes,
+          colorOptions: cp.colors?.map(c => typeof c === 'object' && c ? c.name : String(c)),
+          imageUrls: cp.imageUrls,
+          frequentlyOrdered: true
+        };
+        allProductsMap.set(cp.id, productAsB2b);
+      });
+
+      for (const p of allProductsMap.values()) {
         await sheetsService.saveProduct(url, p);
       }
       // 2. Sync all companies
@@ -775,6 +1006,8 @@ export default function App() {
       return [newProduct, ...prev];
     });
 
+    const scriptUrl = appsScriptConfig.webAppUrl?.trim();
+
     // 2. Find matching company by ID or name and add product to company catalog
     setCompanies(prevCompanies => {
       const targetIdx = prevCompanies.findIndex(
@@ -792,8 +1025,8 @@ export default function App() {
         };
         updated[targetIdx] = updatedCo;
 
-        if (appsScriptConfig.isConnected && appsScriptConfig.webAppUrl) {
-          sheetsService.saveCompany(appsScriptConfig.webAppUrl, updatedCo);
+        if (scriptUrl) {
+          sheetsService.saveCompany(scriptUrl, updatedCo);
         }
 
         return updated;
@@ -807,8 +1040,8 @@ export default function App() {
         };
         updated[0] = updatedCo;
 
-        if (appsScriptConfig.isConnected && appsScriptConfig.webAppUrl) {
-          sheetsService.saveCompany(appsScriptConfig.webAppUrl, updatedCo);
+        if (scriptUrl) {
+          sheetsService.saveCompany(scriptUrl, updatedCo);
         }
 
         return updated;
@@ -816,30 +1049,69 @@ export default function App() {
       return prevCompanies;
     });
 
-    // 3. Save new product to Google Sheets
-    if (appsScriptConfig.isConnected && appsScriptConfig.webAppUrl) {
-      sheetsService.saveProduct(appsScriptConfig.webAppUrl, newProduct);
+    // 3. Save new product to Google Sheets Products tab
+    if (scriptUrl) {
+      sheetsService.saveProduct(scriptUrl, newProduct);
     }
   };
 
   const handleAddCatalogProduct = (product: CatalogProduct) => {
     setCatalogProducts(prev => [product, ...prev]);
-    if (appsScriptConfig.isConnected && appsScriptConfig.webAppUrl) {
-      sheetsService.saveCatalogProduct(appsScriptConfig.webAppUrl, product);
+    const scriptUrl = appsScriptConfig.webAppUrl?.trim();
+    if (scriptUrl) {
+      sheetsService.saveCatalogProduct(scriptUrl, product);
+
+      // Also ensure it is listed in the main Products sheet so all devices get the product data
+      const productAsB2b: Product = {
+        id: product.id,
+        name: product.name,
+        category: (product.category || 'Uniforms') as any,
+        description: product.description || '',
+        imageUrl: product.imageUrl || '',
+        basePrice: (product as any).basePrice || 0,
+        minQuantity: product.moq || 1,
+        unit: 'pcs',
+        leadTime: product.leadTime || '7-10 Business Days',
+        sizeOptions: product.sizes,
+        colorOptions: product.colors?.map(c => typeof c === 'object' && c ? c.name : String(c)),
+        imageUrls: product.imageUrls,
+        frequentlyOrdered: true
+      };
+      sheetsService.saveProduct(scriptUrl, productAsB2b);
     }
   };
 
   const handleUpdateCatalogProduct = (product: CatalogProduct) => {
     setCatalogProducts(prev => prev.map(p => p.id === product.id ? product : p));
-    if (appsScriptConfig.isConnected && appsScriptConfig.webAppUrl) {
-      sheetsService.saveCatalogProduct(appsScriptConfig.webAppUrl, product);
+    const scriptUrl = appsScriptConfig.webAppUrl?.trim();
+    if (scriptUrl) {
+      sheetsService.saveCatalogProduct(scriptUrl, product);
+
+      const productAsB2b: Product = {
+        id: product.id,
+        name: product.name,
+        category: (product.category || 'Uniforms') as any,
+        description: product.description || '',
+        imageUrl: product.imageUrl || '',
+        basePrice: (product as any).basePrice || 0,
+        minQuantity: product.moq || 1,
+        unit: 'pcs',
+        leadTime: product.leadTime || '7-10 Business Days',
+        sizeOptions: product.sizes,
+        colorOptions: product.colors?.map(c => typeof c === 'object' && c ? c.name : String(c)),
+        imageUrls: product.imageUrls,
+        frequentlyOrdered: true
+      };
+      sheetsService.saveProduct(scriptUrl, productAsB2b);
     }
   };
 
   const handleDeleteCatalogProduct = (productId: string) => {
     setCatalogProducts(prev => prev.filter(p => p.id !== productId));
-    if (appsScriptConfig.isConnected && appsScriptConfig.webAppUrl) {
-      sheetsService.deleteCatalogProduct(appsScriptConfig.webAppUrl, productId);
+    const scriptUrl = appsScriptConfig.webAppUrl?.trim();
+    if (scriptUrl) {
+      sheetsService.deleteCatalogProduct(scriptUrl, productId);
+      sheetsService.deleteProduct(scriptUrl, productId);
     }
   };
 
@@ -878,6 +1150,7 @@ export default function App() {
 
   const handleLogout = () => {
     setLoggedInUser(null);
+    sessionStorage.removeItem('rp_logged_in_user');
     localStorage.removeItem('rp_logged_in_user');
   };
 
@@ -1079,7 +1352,9 @@ export default function App() {
     setOrderPortals(prev => [newPortal, ...prev]);
 
     if (appsScriptConfig.isConnected && appsScriptConfig.webAppUrl) {
-      sheetsService.savePortal(appsScriptConfig.webAppUrl, newPortal);
+      const url = appsScriptConfig.webAppUrl;
+      sheetsService.savePortal(url, newPortal);
+      syncPortalProductsToSheets(url, newPortal.productIds, newPortal.companyId);
     }
   };
 
@@ -1090,7 +1365,9 @@ export default function App() {
     }
 
     if (appsScriptConfig.isConnected && appsScriptConfig.webAppUrl) {
-      sheetsService.savePortal(appsScriptConfig.webAppUrl, updatedPortal);
+      const url = appsScriptConfig.webAppUrl;
+      sheetsService.savePortal(url, updatedPortal);
+      syncPortalProductsToSheets(url, updatedPortal.productIds, updatedPortal.companyId);
     }
   };
 
@@ -1107,6 +1384,8 @@ export default function App() {
 
   const handlePublicPortalSubmitOrder = async (orderData: {
     contactPerson: string;
+    contactNumber?: string;
+    fbMessengerLink?: string;
     contactEmail: string;
     deliveryAddress: string;
     poNumber?: string;
@@ -1132,6 +1411,8 @@ export default function App() {
       companyName: portalCompany.name,
       contactEmail: orderData.contactEmail,
       contactPerson: orderData.contactPerson,
+      contactNumber: orderData.contactNumber,
+      fbMessengerLink: orderData.fbMessengerLink,
       deliveryAddress: orderData.deliveryAddress,
       poNumber: orderData.poNumber,
       notes: orderData.notes,
@@ -1168,11 +1449,11 @@ export default function App() {
 
     const productMap = new Map<string, Product>();
     const enabledIds = company.enabledProductIds;
-    const hasExplicitEnabledList = Array.isArray(enabledIds);
+    const hasExplicitEnabledList = Array.isArray(enabledIds) && enabledIds.length > 0;
 
     // First pass: add master products filtered by enabledProductIds if specified
     masterList.forEach(p => {
-      if (!hasExplicitEnabledList || enabledIds.includes(p.id)) {
+      if (!hasExplicitEnabledList || enabledIds!.includes(p.id)) {
         productMap.set(p.id, p);
       }
     });
@@ -1180,7 +1461,7 @@ export default function App() {
     // Second pass: add/override with company custom products
     if (Array.isArray(company.customProducts) && company.customProducts.length > 0) {
       company.customProducts.forEach(cp => {
-        if (!hasExplicitEnabledList || enabledIds.includes(cp.id) || company.customProducts?.some(c => c.id === cp.id)) {
+        if (!hasExplicitEnabledList || enabledIds!.includes(cp.id) || company.customProducts?.some(c => c.id === cp.id)) {
           productMap.set(cp.id, cp);
         }
       });
@@ -1191,10 +1472,97 @@ export default function App() {
 
   const scopedProducts = getCompanyProducts(activeCompany, products);
 
+  // Helper to ensure selected portal products exist in Google Sheets
+  const syncPortalProductsToSheets = (url: string, productIds?: string[], companyId?: string) => {
+    if (!url) return;
+    const targetCompany = companies.find(c => c.id === companyId) || activeCompany;
+
+    const productMap = new Map<string, Product>();
+    products.forEach(p => productMap.set(p.id, p));
+    if (targetCompany && Array.isArray(targetCompany.customProducts)) {
+      targetCompany.customProducts.forEach(cp => productMap.set(cp.id, cp));
+    }
+    catalogProducts.forEach(cp => {
+      if (!productMap.has(cp.id)) {
+        productMap.set(cp.id, {
+          id: cp.id,
+          name: cp.name,
+          category: (cp.category || 'Uniforms') as any,
+          description: cp.description || '',
+          imageUrl: cp.imageUrl || '',
+          basePrice: cp.basePrice || 0,
+          minQuantity: cp.moq || 1,
+          unit: 'pcs',
+          leadTime: cp.leadTime || '7-10 Business Days',
+          sizeOptions: cp.sizes,
+          colorOptions: cp.colors?.map(c => typeof c === 'object' && c ? c.name : String(c)),
+          imageUrls: cp.imageUrls,
+          frequentlyOrdered: true
+        });
+      }
+    });
+
+    const idsToSync = (productIds && productIds.length > 0)
+      ? productIds
+      : Array.from(productMap.keys());
+
+    idsToSync.forEach(id => {
+      const prod = productMap.get(id);
+      if (prod) {
+        sheetsService.saveProduct(url, prod);
+      }
+    });
+  };
+
   // Render public order portal if active or opened via share link
   if (activePublicPortal) {
     const portalCompany = companies.find(c => c.id === activePublicPortal.companyId) || activeCompany;
-    const companyAvailableProducts = getCompanyProducts(portalCompany, products);
+    
+    // Aggregate master products, company custom products, and catalog products
+    const productMap = new Map<string, Product>();
+    products.forEach(p => productMap.set(p.id, p));
+    if (portalCompany && Array.isArray(portalCompany.customProducts)) {
+      portalCompany.customProducts.forEach(cp => productMap.set(cp.id, cp));
+    }
+    catalogProducts.forEach(cp => {
+      if (!productMap.has(cp.id)) {
+        productMap.set(cp.id, {
+          id: cp.id,
+          name: cp.name,
+          category: (cp.category || 'Uniforms') as any,
+          description: cp.description || '',
+          imageUrl: cp.imageUrl || '',
+          basePrice: cp.basePrice || 0,
+          minQuantity: cp.moq || cp.minQuantity || 1,
+          unit: 'pcs',
+          leadTime: cp.leadTime,
+          sizeOptions: cp.sizes,
+          colorOptions: cp.colors?.map(c => typeof c === 'object' && c ? c.name : String(c)),
+          imageUrls: cp.imageUrls,
+          frequentlyOrdered: true
+        });
+      }
+    });
+
+    const allProductsArray = Array.from(productMap.values());
+
+    let companyAvailableProducts: Product[] = [];
+
+    if (activePublicPortal.productIds && activePublicPortal.productIds.length > 0) {
+      const portalSet = new Set(activePublicPortal.productIds.map(id => String(id).trim()));
+      companyAvailableProducts = allProductsArray.filter(p => portalSet.has(String(p.id).trim()));
+
+      if (companyAvailableProducts.length === 0) {
+        companyAvailableProducts = getCompanyProducts(portalCompany, allProductsArray);
+      }
+    } else {
+      companyAvailableProducts = getCompanyProducts(portalCompany, allProductsArray);
+    }
+
+    // Safety fallback: If still 0 products, show all available products
+    if (companyAvailableProducts.length === 0 && allProductsArray.length > 0) {
+      companyAvailableProducts = allProductsArray;
+    }
 
     return (
       <>
@@ -1369,6 +1737,9 @@ export default function App() {
                 onUpdatePortal={handleUpdatePortal}
                 onDeletePortal={handleDeletePortal}
                 onViewPortal={(portal) => setActivePublicPortal(portal)}
+                appsScriptUrl={appsScriptConfig.isConnected ? appsScriptConfig.webAppUrl : undefined}
+                orders={orders}
+                onUpdateOrders={handleUpdateOrders}
               />
             )}
 
