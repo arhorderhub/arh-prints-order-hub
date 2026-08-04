@@ -106,6 +106,7 @@ export default function ClientDashboardModal({
   // Searches
   const [productSearch, setProductSearch] = useState('');
   const [orderSearch, setOrderSearch] = useState('');
+  const [orderSort, setOrderSort] = useState<'newest' | 'oldest' | 'amount_high' | 'amount_low' | 'az' | 'za'>('newest');
   const [selectedOrderDetailsId, setSelectedOrderDetailsId] = useState<string | null>(null);
 
   // Product add/edit states
@@ -155,6 +156,8 @@ export default function ClientDashboardModal({
       frequentlyOrdered: false,
       sizeOptions: ['XS', 'S', 'M', 'L', 'XL', '2XL', '3XL'],
       colorOptions: ['Midnight Black', 'Slate Grey', 'Bright White', 'Navy Blue', 'Forest Green'],
+      colorImages: {},
+      variantPrices: {},
       customFields: [
         { name: 'logo_position', type: 'select', label: 'Logo Position', options: ['Left Chest', 'Right Chest', 'Sleeve', 'Back Collar'], required: true },
         { name: 'personalization', type: 'textarea', label: 'Sizes & Name Personalization (Optional)', placeholder: 'e.g. John - L - Logo only', required: false }
@@ -189,6 +192,8 @@ export default function ClientDashboardModal({
       frequentlyOrdered: !!prod.frequentlyOrdered,
       sizeOptions: prod.sizeOptions || [],
       colorOptions: prod.colorOptions || [],
+      colorImages: prod.colorImages || {},
+      variantPrices: prod.variantPrices || {},
       customFields: prod.customFields || []
     });
     setNewSizeInput('');
@@ -369,9 +374,12 @@ export default function ClientDashboardModal({
   // Derived / Filtered States
   // ----------------------------------------------------
   
-  // Orders strictly belonging to this company
+  // Direct orders strictly belonging to this company (excluding custom portal orders for ARH Admin view)
   const companyOrders = useMemo(() => {
-    return orders.filter(o => o.companyName.toLowerCase() === company.name.toLowerCase());
+    return orders.filter(
+      o => o.companyName.toLowerCase() === company.name.toLowerCase() &&
+      !(o.id.startsWith('ord-portal-') || Boolean(o.portalId) || Boolean(o.portalName) || o.status === 'Pending Approval')
+    );
   }, [orders, company.name]);
 
   // Financial statistics
@@ -439,13 +447,34 @@ export default function ClientDashboardModal({
   }, [clientProducts, productSearch]);
 
   const filteredCompanyOrders = useMemo(() => {
-    if (!orderSearch) return companyOrders;
-    return companyOrders.filter(o =>
-      o.orderNumber.toLowerCase().includes(orderSearch.toLowerCase()) ||
-      o.status.toLowerCase().includes(orderSearch.toLowerCase()) ||
-      (o.poNumber && o.poNumber.toLowerCase().includes(orderSearch.toLowerCase()))
-    );
-  }, [companyOrders, orderSearch]);
+    const list = companyOrders.filter(o => {
+      if (!orderSearch) return true;
+      return (
+        o.orderNumber.toLowerCase().includes(orderSearch.toLowerCase()) ||
+        o.status.toLowerCase().includes(orderSearch.toLowerCase()) ||
+        (o.poNumber && o.poNumber.toLowerCase().includes(orderSearch.toLowerCase()))
+      );
+    });
+
+    return list.sort((a, b) => {
+      if (orderSort === 'oldest') {
+        return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+      }
+      if (orderSort === 'amount_high') {
+        return (b.totalAmount || 0) - (a.totalAmount || 0);
+      }
+      if (orderSort === 'amount_low') {
+        return (a.totalAmount || 0) - (b.totalAmount || 0);
+      }
+      if (orderSort === 'az') {
+        return (a.orderNumber || '').localeCompare(b.orderNumber || '');
+      }
+      if (orderSort === 'za') {
+        return (b.orderNumber || '').localeCompare(a.orderNumber || '');
+      }
+      return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+    });
+  }, [companyOrders, orderSearch, orderSort]);
 
   // Toggle single allocation directly within the dashboard
   const handleToggleAllocation = (productId: string) => {
@@ -479,11 +508,11 @@ export default function ClientDashboardModal({
               <img
                 src={company.logoUrl}
                 alt={company.name}
-                className="w-16 h-16 rounded-[1.25rem] object-cover border-2 border-black shadow-sm"
+                className="w-16 h-16 object-contain shrink-0"
                 referrerPolicy="no-referrer"
               />
             ) : (
-              <div className="w-16 h-16 rounded-[1.25rem] bg-black text-white border-2 border-black flex items-center justify-center font-bold font-mono text-xl shadow-sm">
+              <div className="w-16 h-16 rounded-[1.25rem] bg-black text-white flex items-center justify-center font-bold font-mono text-xl shrink-0">
                 {company.name.substring(0, 2).toUpperCase()}
               </div>
             )}
@@ -634,7 +663,7 @@ export default function ClientDashboardModal({
                     <div className="flex items-start gap-2.5">
                       <MapPin className="w-4 h-4 text-gray-400 shrink-0 mt-0.5" />
                       <div>
-                        <span className="block text-[8px] uppercase tracking-wider text-gray-400 font-mono font-bold">Standard Delivery Destination</span>
+                        <span className="block text-[8px] uppercase tracking-wider text-gray-400 font-mono font-bold">Standard Address</span>
                         <p className="font-semibold text-black leading-snug">{company.deliveryAddress}</p>
                       </div>
                     </div>
@@ -1067,14 +1096,51 @@ export default function ClientDashboardModal({
                           ))
                         )}
                       </div>
+
+                      {productForm.sizeOptions && productForm.sizeOptions.length > 0 && (
+                        <div className="mt-3 pt-3 border-t border-gray-200/80 space-y-2">
+                          <span className="block text-[9px] uppercase font-mono tracking-wider font-extrabold text-gray-600">
+                            Variant Specific Pricing per Size (Optional):
+                          </span>
+                          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
+                            {productForm.sizeOptions.map((sz) => {
+                              const currentVal = productForm.variantPrices?.[sz] !== undefined ? productForm.variantPrices[sz] : productForm.basePrice;
+                              return (
+                                <div key={sz} className="bg-white border border-gray-200 rounded-xl p-2 space-y-1">
+                                  <span className="text-[9px] font-mono font-bold text-black uppercase block">{sz} Price:</span>
+                                  <div className="flex items-center gap-1">
+                                    <span className="text-[10px] font-mono text-gray-400">Php</span>
+                                    <input
+                                      type="number"
+                                      step="0.01"
+                                      value={currentVal}
+                                      onChange={(e) => {
+                                        const val = parseFloat(e.target.value) || 0;
+                                        setProductForm(prev => ({
+                                          ...prev,
+                                          variantPrices: {
+                                            ...(prev.variantPrices || {}),
+                                            [sz]: val
+                                          }
+                                        }));
+                                      }}
+                                      className="w-full text-xs font-mono font-bold text-black focus:outline-none"
+                                    />
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
                     </div>
 
-                    {/* COLORS */}
+                    {/* COLORS & LINKED IMAGES */}
                     <div className="space-y-3 bg-neutral-50/50 p-4 rounded-2xl border border-gray-200/60">
                       <div className="flex justify-between items-center">
                         <div>
-                          <span className="block text-[10px] uppercase font-mono tracking-wider font-extrabold text-black">Available Corporate Color Palette</span>
-                          <span className="block text-[9px] text-gray-400 font-mono">Define brand-approved product colors</span>
+                          <span className="block text-[10px] uppercase font-mono tracking-wider font-extrabold text-black">Available Corporate Color Palette & Linked Images</span>
+                          <span className="block text-[9px] text-gray-400 font-mono">Define product colors and link uploaded image to specific color variants</span>
                         </div>
                       </div>
 
@@ -1101,11 +1167,11 @@ export default function ClientDashboardModal({
                         </button>
                       </div>
 
-                      <div className="flex flex-wrap gap-1.5 pt-1">
-                        {(!productForm.colorOptions || productForm.colorOptions.length === 0) ? (
-                          <span className="text-[10px] text-gray-400 italic">No color variants enabled (Single default color)</span>
-                        ) : (
-                          productForm.colorOptions.map((cl) => {
+                      {(!productForm.colorOptions || productForm.colorOptions.length === 0) ? (
+                        <span className="text-[10px] text-gray-400 italic block pt-1">No color variants enabled (Single default color)</span>
+                      ) : (
+                        <div className="space-y-2 pt-1">
+                          {productForm.colorOptions.map((cl) => {
                             // Find hex color
                             let hex = '#ccc';
                             const lower = cl.toLowerCase();
@@ -1118,23 +1184,84 @@ export default function ClientDashboardModal({
                             else if (lower.includes('gold') || lower.includes('yellow')) hex = '#eab308';
                             else if (lower.includes('orange')) hex = '#ea580c';
                             else if (lower.includes('purple')) hex = '#7c3aed';
-                            
+
+                            const linkedImg = productForm.colorImages?.[cl] || '';
+                            const availableImages = Array.from(new Set([
+                              ...(productForm.imageUrls || []),
+                              productForm.imageUrl
+                            ].filter(Boolean)));
+
                             return (
-                              <span key={cl} className="inline-flex items-center gap-1.5 px-2 py-1 bg-white border border-gray-200 rounded-lg text-[10px] font-mono font-bold text-black shadow-2xs">
-                                <span className="w-2.5 h-2.5 rounded-full border border-gray-300" style={{ backgroundColor: hex }} />
-                                {cl}
-                                <button
-                                  type="button"
-                                  onClick={() => handleRemoveColor(cl)}
-                                  className="text-gray-400 hover:text-red-500 font-black ml-0.5 text-xs focus:outline-none cursor-pointer"
-                                >
-                                  &times;
-                                </button>
-                              </span>
+                              <div key={cl} className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 bg-white border border-gray-200/80 rounded-xl p-2 text-xs font-mono shadow-2xs">
+                                <div className="flex items-center gap-1.5 shrink-0">
+                                  <span className="w-3 h-3 rounded-full border border-gray-300 shadow-2xs" style={{ backgroundColor: hex }} />
+                                  <span className="font-bold text-black">{cl}</span>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleRemoveColor(cl)}
+                                    className="text-gray-400 hover:text-red-500 font-black ml-1 text-xs focus:outline-none cursor-pointer"
+                                  >
+                                    &times;
+                                  </button>
+                                </div>
+
+                                <div className="flex items-center gap-2">
+                                  <span className="text-[10px] text-gray-400 font-bold uppercase font-mono shrink-0">Linked Image:</span>
+                                  {availableImages.length > 0 ? (
+                                    <select
+                                      value={linkedImg}
+                                      onChange={(e) => {
+                                        const val = e.target.value;
+                                        setProductForm({
+                                          ...productForm,
+                                          colorImages: {
+                                            ...(productForm.colorImages || {}),
+                                            [cl]: val
+                                          }
+                                        });
+                                      }}
+                                      className="p-1 border border-gray-200 rounded-lg text-[11px] font-mono bg-white focus:outline-none focus:border-black max-w-[210px] truncate"
+                                    >
+                                      <option value="">-- Main Cover Image --</option>
+                                      {availableImages.map((img, i) => (
+                                        <option key={i} value={img}>
+                                          Image #{i + 1} ({img.substring(0, 24)}...)
+                                        </option>
+                                      ))}
+                                    </select>
+                                  ) : (
+                                    <input
+                                      type="url"
+                                      placeholder="Paste image URL..."
+                                      value={linkedImg}
+                                      onChange={(e) => {
+                                        const val = e.target.value;
+                                        setProductForm({
+                                          ...productForm,
+                                          colorImages: {
+                                            ...(productForm.colorImages || {}),
+                                            [cl]: val
+                                          }
+                                        });
+                                      }}
+                                      className="p-1 border border-gray-200 rounded-lg text-[11px] font-mono bg-white focus:outline-none focus:border-black w-44"
+                                    />
+                                  )}
+
+                                  {linkedImg && (
+                                    <img
+                                      src={linkedImg}
+                                      alt={cl}
+                                      className="w-6 h-6 rounded-md object-cover border border-gray-200 shadow-2xs shrink-0"
+                                      referrerPolicy="no-referrer"
+                                    />
+                                  )}
+                                </div>
+                              </div>
                             );
-                          })
-                        )}
-                      </div>
+                          })}
+                        </div>
+                      )}
                     </div>
 
                     {/* CUSTOM FIELDS (SPECS) */}
@@ -1527,20 +1654,35 @@ export default function ClientDashboardModal({
           {/* 3. ORDER HISTORY TAB */}
           {activeSubTab === 'orders' && (
             <div className="space-y-4 animate-fade-in">
-              {/* Order Search Filter */}
+              {/* Order Search & Sort Filters */}
               <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
-                <div className="relative flex items-center w-full sm:max-w-xs">
-                  <Search className="absolute left-3 w-4 h-4 text-gray-400" />
-                  <input
-                    type="text"
-                    placeholder="Search by order # or PO..."
-                    value={orderSearch}
-                    onChange={(e) => setOrderSearch(e.target.value)}
-                    className="w-full bg-white border border-gray-200 rounded-xl pl-9 pr-4 py-2 text-xs text-black focus:border-black focus:outline-none"
-                    id="client-dash-order-search"
-                  />
+                <div className="flex flex-col sm:flex-row items-center gap-2 w-full sm:max-w-md">
+                  <div className="relative flex items-center w-full">
+                    <Search className="absolute left-3 w-4 h-4 text-gray-400" />
+                    <input
+                      type="text"
+                      placeholder="Search by order # or PO..."
+                      value={orderSearch}
+                      onChange={(e) => setOrderSearch(e.target.value)}
+                      className="w-full bg-white border border-gray-200 rounded-xl pl-9 pr-4 py-2 text-xs text-black focus:border-black focus:outline-none"
+                      id="client-dash-order-search"
+                    />
+                  </div>
+                  <select
+                    value={orderSort}
+                    onChange={(e) => setOrderSort(e.target.value as any)}
+                    className="w-full sm:w-auto bg-white border border-gray-200 rounded-xl px-3 py-2 text-xs font-bold text-black focus:border-black focus:outline-none shadow-2xs"
+                    id="client-dash-order-sort"
+                  >
+                    <option value="newest">Newer - Older</option>
+                    <option value="oldest">Older - Newer</option>
+                    <option value="amount_high">Price: High to Low</option>
+                    <option value="amount_low">Price: Low to High</option>
+                    <option value="az">Order #: A - Z</option>
+                    <option value="za">Order #: Z - A</option>
+                  </select>
                 </div>
-                <span className="text-[10px] text-gray-400 font-mono font-bold uppercase">
+                <span className="text-[10px] text-gray-400 font-mono font-bold uppercase shrink-0">
                   {filteredCompanyOrders.length} B2B Purchases Found
                 </span>
               </div>
@@ -1571,6 +1713,13 @@ export default function ClientDashboardModal({
                                   {ord.orderNumber}
                                 </span>
                                 <span className={`px-2 py-0.5 text-[9px] font-mono font-bold uppercase rounded-md border ${
+                                  ord.status === 'Reviewed' ? 'bg-purple-100 text-purple-900 border-purple-300' :
+                                  ord.status === 'To Order' ? 'bg-amber-100 text-amber-900 border-amber-300' :
+                                  ord.status === 'Ordered' ? 'bg-blue-100 text-blue-900 border-blue-300' :
+                                  ord.status === 'Admin Received' ? 'bg-teal-100 text-teal-900 border-teal-300' :
+                                  ord.status === 'Customer Claimed' ? 'bg-emerald-100 text-emerald-900 border-emerald-300' :
+                                  ord.status === 'Delivered' ? 'bg-green-100 text-green-900 border-green-300' :
+                                  ord.status === 'Picked Up' ? 'bg-indigo-100 text-indigo-900 border-indigo-300' :
                                   ord.status === 'Pending Approval' ? 'bg-amber-100 text-amber-900 border-amber-300 animate-pulse' :
                                   ord.status === 'Completed' ? 'bg-green-50 text-green-700 border-green-100' :
                                   ord.status === 'Shipped' ? 'bg-blue-50 text-blue-700 border-blue-100' :
@@ -1610,7 +1759,7 @@ export default function ClientDashboardModal({
                           <div className="px-5 pb-5 pt-1 bg-[#fafafa] border-t border-gray-100 space-y-4 text-xs font-mono">
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-3 border-b border-gray-100 pb-3">
                               <div>
-                                <span className="block text-[8px] uppercase tracking-wider text-gray-400 font-bold mb-1">Shipping &amp; Delivery Destination</span>
+                                <span className="block text-[8px] uppercase tracking-wider text-gray-400 font-bold mb-1">Address</span>
                                 <p className="font-semibold text-black leading-snug">{ord.deliveryAddress}</p>
                               </div>
                               <div>
@@ -1642,37 +1791,101 @@ export default function ClientDashboardModal({
 
                             {/* Line items checklist */}
                             <div className="space-y-2">
-                              <span className="block text-[8px] uppercase tracking-wider text-gray-400 font-bold">Itemized Order Specifications</span>
+                              <div className="flex items-center justify-between">
+                                <span className="block text-[8px] uppercase tracking-wider text-gray-400 font-bold">Itemized Order Specifications</span>
+                                {ord.items.some(i => i.submitterName) && (
+                                  <span className="text-[9px] bg-amber-100 text-amber-900 border border-amber-300 px-2 py-0.5 rounded font-mono font-bold">
+                                    📦 Submitter Items Breakdown
+                                  </span>
+                                )}
+                              </div>
                               <div className="bg-white border border-gray-200 rounded-xl overflow-hidden divide-y divide-gray-100">
-                                {ord.items.map((it, idx) => (
-                                  <div key={idx} className="p-3 flex items-center justify-between gap-3 text-[11px]">
-                                    <div className="flex items-center space-x-2.5 min-w-0">
-                                      <div className="w-8 h-8 rounded-lg bg-gray-50 border border-gray-100 overflow-hidden shrink-0 flex items-center justify-center">
-                                        {it.imageUrl?.startsWith('http') ? (
-                                          <img src={it.imageUrl} alt={it.productName} className="w-full h-full object-cover" />
-                                        ) : (
-                                          <div className="text-base">{it.imageUrl || '📦'}</div>
-                                        )}
-                                      </div>
-                                      <div className="min-w-0">
-                                        <span className="font-bold text-black uppercase block truncate">{it.productName}</span>
-                                        <div className="flex flex-wrap gap-1 mt-0.5 text-[9px] text-gray-400 font-sans">
-                                          {it.selectedSize && <span className="bg-gray-100 text-gray-600 px-1 py-0.2 rounded font-mono font-bold">Size: {it.selectedSize}</span>}
-                                          {it.selectedColor && <span className="bg-gray-100 text-gray-600 px-1 py-0.2 rounded font-mono font-bold">Color: {it.selectedColor}</span>}
-                                          {it.customDetails && Object.keys(it.customDetails).map(k => (
-                                            <span key={k} className="bg-gray-100 text-gray-600 px-1 py-0.2 rounded font-mono font-semibold max-w-[150px] truncate">
-                                              {k}: {it.customDetails![k]}
-                                            </span>
-                                          ))}
+                                {(() => {
+                                  const hasSubmitters = ord.items.some(i => i.submitterName);
+                                  if (!hasSubmitters) {
+                                    return ord.items.map((it, idx) => (
+                                      <div key={idx} className="p-3 flex items-center justify-between gap-3 text-[11px]">
+                                        <div className="flex items-center space-x-2.5 min-w-0">
+                                          <div className="w-8 h-8 rounded-lg bg-gray-50 border border-gray-100 overflow-hidden shrink-0 flex items-center justify-center">
+                                            {it.imageUrl?.startsWith('http') ? (
+                                              <img src={it.imageUrl} alt={it.productName} className="w-full h-full object-cover" />
+                                            ) : (
+                                              <div className="text-base">{it.imageUrl || '📦'}</div>
+                                            )}
+                                          </div>
+                                          <div className="min-w-0">
+                                            <span className="font-bold text-black uppercase block truncate">{it.productName}</span>
+                                            <div className="flex flex-wrap gap-1 mt-0.5 text-[9px] text-gray-400 font-sans">
+                                              {it.selectedSize && <span className="bg-gray-100 text-gray-600 px-1 py-0.2 rounded font-mono font-bold">Size: {it.selectedSize}</span>}
+                                              {it.selectedColor && <span className="bg-gray-100 text-gray-600 px-1 py-0.2 rounded font-mono font-bold">Color: {it.selectedColor}</span>}
+                                              {it.customDetails && Object.keys(it.customDetails).map(k => (
+                                                <span key={k} className="bg-gray-100 text-gray-600 px-1 py-0.2 rounded font-mono font-semibold max-w-[150px] truncate">
+                                                  {k}: {it.customDetails![k]}
+                                                </span>
+                                              ))}
+                                            </div>
+                                          </div>
+                                        </div>
+                                        <div className="text-right shrink-0">
+                                          <span className="font-bold text-black block">{it.quantity} @ Php {it.price.toFixed(2)}</span>
+                                          <span className="font-black text-black block text-xs mt-0.5">Php {(it.quantity * it.price).toFixed(2)}</span>
                                         </div>
                                       </div>
+                                    ));
+                                  }
+
+                                  const groups: { [name: string]: { email?: string; phone?: string; orderNum?: string; items: typeof ord.items } } = {};
+                                  ord.items.forEach(it => {
+                                    const name = it.submitterName || 'General Order';
+                                    if (!groups[name]) {
+                                      groups[name] = {
+                                        email: it.submitterEmail,
+                                        phone: it.submitterPhone,
+                                        orderNum: it.originalOrderNumber,
+                                        items: []
+                                      };
+                                    }
+                                    groups[name].items.push(it);
+                                  });
+
+                                  return Object.entries(groups).map(([name, group], gIdx) => (
+                                    <div key={gIdx} className="p-3 space-y-2">
+                                      <div className="bg-amber-50 border border-amber-200 rounded-lg p-2 flex items-center justify-between text-[10px] font-mono">
+                                        <span className="font-bold text-amber-950 uppercase">👤 Person: {name}</span>
+                                        {group.orderNum && (
+                                          <span className="bg-amber-200 text-amber-900 px-1.5 py-0.5 rounded font-bold">
+                                            {group.orderNum}
+                                          </span>
+                                        )}
+                                      </div>
+                                      <div className="space-y-1 divide-y divide-gray-100 pl-2">
+                                        {group.items.map((it, idx) => (
+                                          <div key={idx} className="pt-1.5 flex items-center justify-between gap-3 text-[11px]">
+                                            <div className="flex items-center space-x-2.5 min-w-0">
+                                              <div className="w-7 h-7 rounded-lg bg-gray-50 border border-gray-100 overflow-hidden shrink-0 flex items-center justify-center">
+                                                {it.imageUrl?.startsWith('http') ? (
+                                                  <img src={it.imageUrl} alt={it.productName} className="w-full h-full object-cover" />
+                                                ) : (
+                                                  <div className="text-xs">{it.imageUrl || '📦'}</div>
+                                                )}
+                                              </div>
+                                              <div className="min-w-0">
+                                                <span className="font-bold text-black uppercase block truncate">{it.productName}</span>
+                                                <div className="flex flex-wrap gap-1 mt-0.5 text-[9px] text-gray-400 font-sans">
+                                                  {it.selectedSize && <span className="bg-gray-100 text-gray-600 px-1 py-0.2 rounded font-mono font-bold">Size: {it.selectedSize}</span>}
+                                                  {it.selectedColor && <span className="bg-gray-100 text-gray-600 px-1 py-0.2 rounded font-mono font-bold">Color: {it.selectedColor}</span>}
+                                                </div>
+                                              </div>
+                                            </div>
+                                            <div className="text-right shrink-0">
+                                              <span className="font-bold text-black block text-xs">{it.quantity}x @ Php {it.price.toFixed(2)}</span>
+                                            </div>
+                                          </div>
+                                        ))}
+                                      </div>
                                     </div>
-                                    <div className="text-right shrink-0">
-                                      <span className="font-bold text-black block">{it.quantity} @ Php {it.price.toFixed(2)}</span>
-                                      <span className="font-black text-black block text-xs mt-0.5">Php {(it.quantity * it.price).toFixed(2)}</span>
-                                    </div>
-                                  </div>
-                                ))}
+                                  ));
+                                })()}
                               </div>
                             </div>
 
@@ -1712,13 +1925,16 @@ export default function ClientDashboardModal({
                                 Quick Dispatch Action
                               </span>
                               
-                              <div className="flex gap-1">
+                              <div className="flex flex-wrap gap-1">
                                 {[
-                                  { label: 'Portal Review', val: 'Pending Approval' },
-                                  { label: 'Sent to Admin', val: 'Pending' },
-                                  { label: 'Approve', val: 'Approved' },
-                                  { label: 'Production', val: 'In Production' },
-                                  { label: 'Ship', val: 'Shipped' },
+                                  { label: 'Reviewed', val: 'Reviewed' },
+                                  { label: 'To Order', val: 'To Order' },
+                                  { label: 'Ordered', val: 'Ordered' },
+                                  { label: 'Admin Recv', val: 'Admin Received' },
+                                  { label: 'Claimed', val: 'Customer Claimed' },
+                                  { label: 'Delivered', val: 'Delivered' },
+                                  { label: 'Picked Up', val: 'Picked Up' },
+                                  { label: 'Pending', val: 'Pending Approval' },
                                   { label: 'Completed', val: 'Completed' }
                                 ].map((st) => (
                                   <button

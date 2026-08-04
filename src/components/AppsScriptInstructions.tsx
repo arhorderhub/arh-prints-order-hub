@@ -224,7 +224,7 @@ function initSheets(ss) {
     "Products": ["Product ID", "Name", "Category", "Description", "Image URL", "Base Price", "Original Price", "Min Quantity", "Unit", "Size Options", "Color Options", "Frequently Ordered", "Shipping Fee", "Image URLs", "Custom Fields"],
     "CatalogProducts": ["Product ID", "SKU", "Name", "Category", "Description", "Image URL", "Image URLs", "MOQ", "Lead Time", "Branding Methods", "Colors", "Sizes", "Status"],
     "Companies": ["Company ID", "Company Name", "Contact Person", "Contact Email", "Contact Phone", "Delivery Address", "Username", "Passcode", "PO Required", "Logo URL", "Approved Products", "Custom Products"],
-    "Portals": ["Portal ID", "Company ID", "Company Name", "Portal Name", "Description", "Status", "Product IDs", "Created At", "Updated At", "Share Token"],
+    "Portals": ["Portal ID", "Company ID", "Company Name", "Portal Name", "Description", "Status", "Product IDs", "Portal Pricing", "Variant Pricing", "Created At", "Updated At", "Share Token"],
     "Admin": ["Hub Name", "Short Hub Name", "Order Prefix", "Currency Symbol", "Admin Username", "Admin Passcode", "Color Theme", "Admin Email", "App Logo URL"],
     "Quotes": ["Enquiry ID", "Enquiry Number", "Product ID", "Product Name", "Product Category", "Company ID", "Company Name", "Contact Person", "Contact Email", "Contact Phone", "Quantity", "Preferred Branding Method", "Preferred Color", "Notes", "Status", "Created At", "Quoted Unit Price", "Quoted Total Price", "Quoted Tax", "Quoted Shipping", "Quote Notes", "Quoted Valid Until", "Quoted At", "Quoted Line Items", "Requested Product Addition", "Requested Product Addition At", "Requested Product Notes"]
   };
@@ -544,7 +544,7 @@ function saveCompany(ss, company) {
 
 function savePortal(ss, portal) {
   var sheet = ss.getSheetByName("Portals");
-  var expectedHeaders = ["Portal ID", "Company ID", "Company Name", "Portal Name", "Description", "Status", "Product IDs", "Created At", "Updated At", "Share Token"];
+  var expectedHeaders = ["Portal ID", "Company ID", "Company Name", "Portal Name", "Description", "Status", "Product IDs", "Portal Pricing", "Variant Pricing", "Created At", "Updated At", "Share Token"];
   var data = ensureHeaders(sheet, expectedHeaders);
   var headers = data[0];
   
@@ -566,6 +566,8 @@ function savePortal(ss, portal) {
   }
   
   var productIdsStr = portal.productIds ? portal.productIds.join(", ") : "";
+  var portalPricingStr = portal.customPrices ? JSON.stringify(portal.customPrices) : "";
+  var variantPricingStr = portal.customVariantPrices ? JSON.stringify(portal.customVariantPrices) : "";
   
   var portalMap = {
     "Portal ID": portal.id,
@@ -575,6 +577,8 @@ function savePortal(ss, portal) {
     "Description": portal.description || "",
     "Status": portal.status || "Active",
     "Product IDs": productIdsStr,
+    "Portal Pricing": portalPricingStr,
+    "Variant Pricing": variantPricingStr,
     "Created At": portal.createdAt || new Date().toISOString(),
     "Updated At": portal.updatedAt || new Date().toISOString(),
     "Share Token": portal.shareToken || ""
@@ -1080,7 +1084,7 @@ function getJsonOutput(obj) {
               <div className="space-y-1">
                 <span className="block text-[9px] uppercase font-mono font-bold text-gray-400">Column Headers (Row 1):</span>
                 <div className="flex flex-wrap gap-1">
-                  {["Portal ID", "Company ID", "Company Name", "Portal Name", "Description", "Status", "Product IDs", "Created At", "Updated At", "Share Token"].map(col => (
+                  {["Portal ID", "Company ID", "Company Name", "Portal Name", "Description", "Status", "Product IDs", "Portal Pricing", "Variant Pricing", "Created At", "Updated At", "Share Token"].map(col => (
                     <span key={col} className="bg-white border border-gray-100 rounded px-1.5 py-0.5 font-mono text-[10px] text-neutral-800 font-semibold shadow-xs">
                       {col}
                     </span>

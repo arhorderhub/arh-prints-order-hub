@@ -31,6 +31,8 @@ export interface Product {
   shippingFee?: number;
   leadTime?: string;
   imageUrls?: string[];
+  variantPrices?: Record<string, number>; // Specific prices for variants (e.g. { "2XL": 20.00, "Red": 16.00 })
+  colorImages?: Record<string, string>;   // Mapping of color name -> image URL
 }
 
 export interface OrderItem {
@@ -42,6 +44,11 @@ export interface OrderItem {
   selectedSize?: string;
   selectedColor?: string;
   customDetails?: Record<string, string>;
+  unitPrice?: number;
+  submitterName?: string;
+  submitterEmail?: string;
+  submitterPhone?: string;
+  originalOrderNumber?: string;
 }
 
 export interface Order {
@@ -50,7 +57,21 @@ export interface Order {
   companyName: string;
   contactEmail: string;
   items: OrderItem[];
-  status: 'Pending Approval' | 'Pending' | 'Approved' | 'In Production' | 'Shipped' | 'Completed' | 'Canceled';
+  status:
+    | 'Reviewed'
+    | 'To Order'
+    | 'Ordered'
+    | 'Admin Received'
+    | 'Customer Claimed'
+    | 'Delivered'
+    | 'Picked Up'
+    | 'Pending Approval'
+    | 'Pending'
+    | 'Approved'
+    | 'In Production'
+    | 'Shipped'
+    | 'Completed'
+    | 'Canceled';
   totalAmount: number;
   createdAt: string;
   deliveryAddress: string;
@@ -85,6 +106,7 @@ export interface CartItem {
   selectedSize?: string;
   selectedColor?: string;
   customDetails: Record<string, string>;
+  unitPrice?: number; // Price calculated from variant or portal custom pricing
 }
 
 export interface AppsScriptConfig {
@@ -114,6 +136,8 @@ export interface CatalogProduct {
   sizes?: string[];
   status: 'Active' | 'Hidden';
   createdAt?: string;
+  variantPrices?: Record<string, number>;
+  colorImages?: Record<string, string>;
 }
 
 export interface QuoteLineItem {
@@ -179,5 +203,7 @@ export interface OrderPortal {
   createdAt: string;
   updatedAt: string;
   shareToken: string;
+  customPrices?: Record<string, number>; // Map of productId -> custom portal base price set by Company Admin
+  customVariantPrices?: Record<string, Record<string, number>>; // Map of productId -> (variantKey -> custom price)
 }
 

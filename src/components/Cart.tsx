@@ -5,6 +5,8 @@
 
 import React, { useState } from 'react';
 import { CartItem, CompanyProfile, Order } from '../types';
+import { getProductUnitPrice } from '../utils/pricing';
+import { getItemColorImage } from '../utils/colorUtils';
 import { X, Trash2, ShoppingBag, Plus, Minus, AlertCircle, Send, Check } from 'lucide-react';
 
 interface CartProps {
@@ -48,7 +50,10 @@ export default function Cart({
   if (!isOpen) return null;
 
   const checkedItems = cartItems.filter(item => !uncheckedItemIds.includes(item.id));
-  const subtotal = checkedItems.reduce((acc, item) => acc + (Number(item.product.basePrice) * Number(item.quantity)), 0);
+  const subtotal = checkedItems.reduce((acc, item) => {
+    const uPrice = item.unitPrice ?? getProductUnitPrice(item.product, item.selectedSize, item.selectedColor);
+    return acc + (uPrice * Number(item.quantity));
+  }, 0);
   const shippingThreshold = 500;
   
   // Calculate shipping cost: free if subtotal >= 500, otherwise max delivery charge of checked items (or 15.00 default)
@@ -202,14 +207,14 @@ export default function Cart({
                               </label>
 
                               {/* Product Thumbnail (safe from overlaps) */}
-                              {renderProductImage(item.product.imageUrl)}
+                              {renderProductImage(getItemColorImage(item.product, item.selectedColor))}
 
                               <div>
                                 <h5 className="font-bold text-xs text-black uppercase tracking-tight">
                                   {item.product.name}
                                 </h5>
                                 <span className="text-[10px] font-mono text-gray-500 block mt-0.5">
-                                  Php {item.product.basePrice.toFixed(2)} per {item.product.unit}
+                                  Php {(item.unitPrice ?? getProductUnitPrice(item.product, item.selectedSize, item.selectedColor)).toFixed(2)} per {item.product.unit}
                                 </span>
                               </div>
                             </div>
@@ -341,10 +346,10 @@ export default function Cart({
                       />
                     </div>
 
-                    {/* Delivery Address */}
+                    {/* Address */}
                     <div>
                       <label className="block text-[10px] uppercase tracking-wider text-black font-bold font-mono mb-1">
-                        Delivery Address:
+                        Address:
                       </label>
                       <textarea
                         value={customAddress}
@@ -409,7 +414,7 @@ export default function Cart({
                       {!checkedItems.length ? "✕ Please check at least one item to order." :
                        isPoMissing ? "✕ A Purchase Order (PO) Number is required." :
                        !customContact.trim() ? "✕ Authorized Buyer Name is required." :
-                       !customAddress.trim() ? "✕ Delivery Address is required." : ""}
+                       !customAddress.trim() ? "✕ Address is required." : ""}
                     </p>
                   )}
                 </div>

@@ -23,6 +23,8 @@ import LoginScreen from './components/LoginScreen';
 import AdminDashboard from './components/AdminDashboard';
 import OrderPortals from './components/OrderPortals';
 import PublicOrderPortal from './components/PublicOrderPortal';
+import { getProductUnitPrice } from './utils/pricing';
+import { getItemColorImage } from './utils/colorUtils';
 import { Check, AlertCircle, ShoppingBag, ArrowRight, Printer, RefreshCw, LogOut, Store } from 'lucide-react';
 
 function getThemeStyles(colorHex: string) {
@@ -119,6 +121,24 @@ function getThemeStyles(colorHex: string) {
   `;
 }
 
+function encodeSecret(str?: string): string {
+  if (!str) return '';
+  try {
+    return btoa(encodeURIComponent(str));
+  } catch {
+    return str;
+  }
+}
+
+function decodeSecret(str?: string): string {
+  if (!str) return '';
+  try {
+    return decodeURIComponent(atob(str));
+  } catch {
+    return str;
+  }
+}
+
 const FALLBACK_COMPANY: CompanyProfile = {
   id: 'fallback',
   name: 'Standard Guest',
@@ -159,7 +179,7 @@ export const sanitizeCompany = (co: CompanyProfile): CompanyProfile => {
 
   const deliveryAddress = (co.deliveryAddress && co.deliveryAddress.trim() !== '')
     ? co.deliveryAddress
-    : (initMatch?.deliveryAddress || 'Standard Delivery Address On File');
+    : (initMatch?.deliveryAddress || 'Standard Address On File');
 
   const logoUrl = (co.logoUrl !== undefined && co.logoUrl !== null) ? co.logoUrl : (initMatch?.logoUrl || '');
 
@@ -275,8 +295,22 @@ export default function App() {
   });
 
   const [systemSettings, setSystemSettings] = useState<SystemSettings>(() => {
+    try {
+      localStorage.removeItem('rp_admin_username');
+      localStorage.removeItem('rp_admin_passcode');
+    } catch {}
+
     const cached = localStorage.getItem('rp_system_settings');
-    const parsed = cached ? JSON.parse(cached) : {};
+    let parsed: any = {};
+    if (cached) {
+      try {
+        parsed = JSON.parse(cached);
+      } catch {}
+    }
+
+    const adminUsername = parsed._sec_au ? decodeSecret(parsed._sec_au) : (parsed.adminUsername || 'admin');
+    const adminPasscode = parsed._sec_ap ? decodeSecret(parsed._sec_ap) : (parsed.adminPasscode || 'admin123');
+
     return {
       hubName: parsed.hubName || 'ARH Print Hub',
       shortHubName: parsed.shortHubName || 'ARH',
@@ -285,8 +319,8 @@ export default function App() {
       colorTheme: parsed.colorTheme || 'classic_noir',
       adminEmail: (parsed.adminEmail && parsed.adminEmail.trim() !== '') ? parsed.adminEmail : 'regie.yoonet@gmail.com',
       logoUrl: parsed.logoUrl || '',
-      adminUsername: parsed.adminUsername || localStorage.getItem('rp_admin_username') || 'admin',
-      adminPasscode: parsed.adminPasscode || localStorage.getItem('rp_admin_passcode') || 'admin123'
+      adminUsername,
+      adminPasscode
     };
   });
 
@@ -340,7 +374,21 @@ export default function App() {
   }, [products]);
 
   useEffect(() => {
-    localStorage.setItem('rp_system_settings', JSON.stringify(systemSettings));
+    try {
+      localStorage.removeItem('rp_admin_username');
+      localStorage.removeItem('rp_admin_passcode');
+    } catch {}
+
+    const settingsToStore: Record<string, any> = { ...systemSettings };
+    if (settingsToStore.adminUsername) {
+      settingsToStore._sec_au = encodeSecret(settingsToStore.adminUsername);
+      delete settingsToStore.adminUsername;
+    }
+    if (settingsToStore.adminPasscode) {
+      settingsToStore._sec_ap = encodeSecret(settingsToStore.adminPasscode);
+      delete settingsToStore.adminPasscode;
+    }
+    localStorage.setItem('rp_system_settings', JSON.stringify(settingsToStore));
   }, [systemSettings]);
 
   useEffect(() => {
@@ -377,6 +425,23 @@ export default function App() {
     }
 
     const tokenClean = urlPortalToken.trim();
+    const searchParams = new URLSearchParams(window.location.search);
+    const urlCp = searchParams.get('cp');
+    const urlCvp = searchParams.get('cvp');
+
+    let urlCustomPrices: Record<string, number> | undefined;
+    let urlCustomVariantPrices: Record<string, Record<string, number>> | undefined;
+
+    if (urlCp) {
+      try {
+        urlCustomPrices = JSON.parse(decodeURIComponent(urlCp));
+      } catch (e) {}
+    }
+    if (urlCvp) {
+      try {
+        urlCustomVariantPrices = JSON.parse(decodeURIComponent(urlCvp));
+      } catch (e) {}
+    }
 
     // 1. Check local portals first
     let match = orderPortals.find(p =>
@@ -422,12 +487,20 @@ export default function App() {
     }
 
     if (match) {
-      setActivePublicPortal(match);
-      setIsResolvingPortal(false);
-      return;
+      const mergedMatch: OrderPortal = {
+        ...match,
+        customPrices: urlCustomPrices || match.customPrices,
+        customVariantPrices: urlCustomVariantPrices || match.customVariantPrices
+      };
+      setActivePublicPortal(mergedMatch);
+      // If NOT connected to Sheets, we are done. If connected, we continue to fetch live Sheets data to get latest updates!
+      if (!appsScriptConfig.isConnected || !appsScriptConfig.webAppUrl) {
+        setIsResolvingPortal(false);
+        return;
+      }
     }
 
-    // 3. If not found locally yet or if connected to Sheets, fetch live data from Google Sheets
+    // 3. If connected to Sheets, fetch live data from Google Sheets to ensure device consistency
     if (appsScriptConfig.isConnected && appsScriptConfig.webAppUrl) {
       setIsResolvingPortal(true);
       const url = appsScriptConfig.webAppUrl;
@@ -468,7 +541,14 @@ export default function App() {
         if (fetchedPortals && fetchedPortals.length > 0) {
           const poMap = new Map<string, OrderPortal>();
           orderPortals.forEach(p => poMap.set(p.id, p));
-          fetchedPortals.forEach(p => poMap.set(p.id, p));
+          fetchedPortals.forEach(fp => {
+            const existing = poMap.get(fp.id);
+            poMap.set(fp.id, {
+              ...fp,
+              customPrices: (fp.customPrices && Object.keys(fp.customPrices).length > 0) ? fp.customPrices : (existing?.customPrices || urlCustomPrices),
+              customVariantPrices: (fp.customVariantPrices && Object.keys(fp.customVariantPrices).length > 0) ? fp.customVariantPrices : (existing?.customVariantPrices || urlCustomVariantPrices)
+            });
+          });
           updatedPortalsList = Array.from(poMap.values());
           setOrderPortals(updatedPortalsList);
         }
@@ -514,7 +594,11 @@ export default function App() {
         }
 
         if (fetchedMatch) {
-          setActivePublicPortal(fetchedMatch);
+          setActivePublicPortal({
+            ...fetchedMatch,
+            customPrices: (fetchedMatch.customPrices && Object.keys(fetchedMatch.customPrices).length > 0) ? fetchedMatch.customPrices : urlCustomPrices,
+            customVariantPrices: (fetchedMatch.customVariantPrices && Object.keys(fetchedMatch.customVariantPrices).length > 0) ? fetchedMatch.customVariantPrices : urlCustomVariantPrices
+          });
         }
         setIsResolvingPortal(false);
       }).catch(err => {
@@ -527,10 +611,33 @@ export default function App() {
   }, [urlPortalToken, orderPortals, companies, products, appsScriptConfig.isConnected, appsScriptConfig.webAppUrl]);
 
   useEffect(() => {
-    if (loggedInUser) {
-      localStorage.setItem('rp_logged_in_user', JSON.stringify(loggedInUser));
-    } else {
+    if (activePublicPortal) {
+      const updated = orderPortals.find(p => p.id === activePublicPortal.id || p.shareToken === activePublicPortal.shareToken);
+      if (updated) {
+        if (
+          JSON.stringify(updated.customPrices) !== JSON.stringify(activePublicPortal.customPrices) ||
+          JSON.stringify(updated.customVariantPrices) !== JSON.stringify(activePublicPortal.customVariantPrices) ||
+          updated.name !== activePublicPortal.name ||
+          updated.status !== activePublicPortal.status
+        ) {
+          setActivePublicPortal(prev => prev ? ({
+            ...updated,
+            customPrices: (updated.customPrices && Object.keys(updated.customPrices).length > 0) ? updated.customPrices : prev.customPrices,
+            customVariantPrices: (updated.customVariantPrices && Object.keys(updated.customVariantPrices).length > 0) ? updated.customVariantPrices : prev.customVariantPrices
+          }) : null);
+        }
+      }
+    }
+  }, [orderPortals]);
+
+  useEffect(() => {
+    try {
       localStorage.removeItem('rp_logged_in_user');
+    } catch {}
+    if (loggedInUser) {
+      sessionStorage.setItem('rp_logged_in_user', JSON.stringify(loggedInUser));
+    } else {
+      sessionStorage.removeItem('rp_logged_in_user');
     }
   }, [loggedInUser]);
 
@@ -557,19 +664,36 @@ export default function App() {
   const [lastSyncedTime, setLastSyncedTime] = useState<string | null>(null);
   const isSyncingRef = React.useRef(false);
 
-  const syncWithSheets = async () => {
+  const syncWithSheets = async (isBackground = false) => {
     if (appsScriptConfig.isConnected && appsScriptConfig.webAppUrl) {
       if (isSyncingRef.current) return;
       isSyncingRef.current = true;
       const url = appsScriptConfig.webAppUrl;
-      setIsSyncingSheets(true);
+      if (!isBackground) {
+        setIsSyncingSheets(true);
+      }
       
       try {
-        // 1. Fetch products
-        const fetchedProducts = await sheetsService.fetchProducts(url);
+        // Parallelize all requests to make syncing as fast as possible (~300ms)
+        const [
+          fetchedProducts,
+          fetchedCompanies,
+          fetchedOrders,
+          fetchedSettings,
+          fetchedQuotes,
+          fetchedCatalogProducts,
+          fetchedPortals
+        ] = await Promise.all([
+          sheetsService.fetchProducts(url).catch(() => null),
+          sheetsService.fetchCompanies(url).catch(() => null),
+          sheetsService.fetchOrders(url).catch(() => null),
+          sheetsService.fetchAdminSettings(url).catch(() => null),
+          sheetsService.fetchQuoteEnquiries(url).catch(() => null),
+          sheetsService.fetchCatalogProducts(url).catch(() => null),
+          sheetsService.fetchPortals(url).catch(() => null)
+        ]);
 
-        // 2. Fetch companies
-        const fetchedCompanies = await sheetsService.fetchCompanies(url);
+        // 1. Process companies
         if (fetchedCompanies !== null && fetchedCompanies.length > 0) {
           setCompanies(prevCompanies => {
             return fetchedCompanies.map(fc => {
@@ -603,7 +727,7 @@ export default function App() {
           });
         }
 
-        // 3. Merge products from fetchedProducts and company customProducts
+        // 2. Merge products from fetchedProducts and company customProducts
         if (fetchedProducts !== null || fetchedCompanies !== null) {
           setProducts(prevProducts => {
             const map = new Map<string, Product>();
@@ -624,8 +748,7 @@ export default function App() {
           });
         }
 
-        // 3. Fetch orders
-        const fetchedOrders = await sheetsService.fetchOrders(url);
+        // 3. Process orders
         if (fetchedOrders !== null) {
           setOrders(prevOrders => {
             const fetchedIds = new Set(fetchedOrders.map(o => o.id));
@@ -647,25 +770,15 @@ export default function App() {
           });
         }
 
-        // 4. Fetch admin settings
-        const fetchedSettings = await sheetsService.fetchAdminSettings(url);
+        // 4. Process admin settings
         if (fetchedSettings) {
-          const storedAdminUser = localStorage.getItem('rp_admin_username');
-          const storedAdminPass = localStorage.getItem('rp_admin_passcode');
+          let currentAdminUser = (fetchedSettings.adminUsername && fetchedSettings.adminUsername.trim() !== '')
+            ? fetchedSettings.adminUsername.trim()
+            : (systemSettings.adminUsername || 'admin');
 
-          let currentAdminUser = 'admin';
-          if (storedAdminUser && storedAdminUser.trim() !== '') {
-            currentAdminUser = storedAdminUser.trim();
-          } else if (fetchedSettings.adminUsername && fetchedSettings.adminUsername.trim() !== '') {
-            currentAdminUser = fetchedSettings.adminUsername.trim();
-          }
-
-          let currentAdminPass = 'admin123';
-          if (storedAdminPass && storedAdminPass.trim() !== '') {
-            currentAdminPass = storedAdminPass.trim();
-          } else if (fetchedSettings.adminPasscode && fetchedSettings.adminPasscode.trim() !== '' && fetchedSettings.adminPasscode.trim() !== 'admin123') {
-            currentAdminPass = fetchedSettings.adminPasscode.trim();
-          }
+          let currentAdminPass = (fetchedSettings.adminPasscode && fetchedSettings.adminPasscode.trim() !== '' && fetchedSettings.adminPasscode.trim() !== 'admin123')
+            ? fetchedSettings.adminPasscode.trim()
+            : (systemSettings.adminPasscode || 'admin123');
 
           setSystemSettings({
             hubName: fetchedSettings.hubName || 'ARH Print Hub',
@@ -678,12 +791,9 @@ export default function App() {
             adminUsername: currentAdminUser,
             adminPasscode: currentAdminPass
           });
-          localStorage.setItem('rp_admin_username', currentAdminUser);
-          localStorage.setItem('rp_admin_passcode', currentAdminPass);
         }
 
-        // 5. Fetch quote enquiries
-        const fetchedQuotes = await sheetsService.fetchQuoteEnquiries(url);
+        // 5. Process quote enquiries
         if (fetchedQuotes !== null) {
           setQuoteEnquiries(fetchedQuotes.map(q => ({
             ...q,
@@ -691,19 +801,30 @@ export default function App() {
           })));
         }
 
-        // 6. Fetch catalog products
-        const fetchedCatalogProducts = await sheetsService.fetchCatalogProducts(url);
+        // 6. Process catalog products
         if (fetchedCatalogProducts !== null) {
           setCatalogProducts(fetchedCatalogProducts.map(sanitizeCatalogProduct));
         }
 
-        // 7. Fetch order portals
-        const fetchedPortals = await sheetsService.fetchPortals(url);
+        // 7. Process order portals
         if (fetchedPortals !== null) {
           setOrderPortals(prevPortals => {
             const map = new Map<string, OrderPortal>();
             prevPortals.forEach(p => map.set(p.id, p));
-            fetchedPortals.forEach(p => map.set(p.id, p));
+            fetchedPortals.forEach(p => {
+              const existing = map.get(p.id);
+              const customPrices = (p.customPrices && Object.keys(p.customPrices).length > 0)
+                ? p.customPrices
+                : existing?.customPrices;
+              const customVariantPrices = (p.customVariantPrices && Object.keys(p.customVariantPrices).length > 0)
+                ? p.customVariantPrices
+                : existing?.customVariantPrices;
+              map.set(p.id, {
+                ...p,
+                customPrices,
+                customVariantPrices
+              });
+            });
             return Array.from(map.values());
           });
         }
@@ -720,18 +841,31 @@ export default function App() {
 
   // Pull live data from Sheets on load or config change
   useEffect(() => {
-    syncWithSheets();
+    syncWithSheets(false);
   }, [appsScriptConfig.isConnected, appsScriptConfig.webAppUrl]);
 
-  // Auto-refresh every 20 seconds to fetch data from Google Sheets automatically
+  // High-frequency silent background polling (every 4 seconds) + instant tab focus/visibility trigger
   useEffect(() => {
     if (!appsScriptConfig.isConnected || !appsScriptConfig.webAppUrl) return;
 
     const intervalId = setInterval(() => {
-      syncWithSheets();
-    }, 20000);
+      syncWithSheets(true);
+    }, 4000);
 
-    return () => clearInterval(intervalId);
+    const handleFocusOrVisible = () => {
+      if (document.visibilityState === 'visible') {
+        syncWithSheets(true);
+      }
+    };
+
+    window.addEventListener('focus', handleFocusOrVisible);
+    document.addEventListener('visibilitychange', handleFocusOrVisible);
+
+    return () => {
+      clearInterval(intervalId);
+      window.removeEventListener('focus', handleFocusOrVisible);
+      document.removeEventListener('visibilitychange', handleFocusOrVisible);
+    };
   }, [appsScriptConfig.isConnected, appsScriptConfig.webAppUrl]);
 
   // Ensure default active tab is appropriate for logged-in user
@@ -908,17 +1042,11 @@ export default function App() {
   const handleUpdateSystemSettings = (newSettings: SystemSettings) => {
     const updatedSettings: SystemSettings = {
       ...newSettings,
-      adminUsername: newSettings.adminUsername || localStorage.getItem('rp_admin_username') || 'admin',
-      adminPasscode: newSettings.adminPasscode || localStorage.getItem('rp_admin_passcode') || 'admin123'
+      adminUsername: newSettings.adminUsername || systemSettings.adminUsername || 'admin',
+      adminPasscode: newSettings.adminPasscode || systemSettings.adminPasscode || 'admin123'
     };
 
     setSystemSettings(updatedSettings);
-    if (updatedSettings.adminUsername) {
-      localStorage.setItem('rp_admin_username', updatedSettings.adminUsername);
-    }
-    if (updatedSettings.adminPasscode) {
-      localStorage.setItem('rp_admin_passcode', updatedSettings.adminPasscode);
-    }
 
     if (appsScriptConfig.isConnected && appsScriptConfig.webAppUrl) {
       sheetsService.saveAdminSettings(
@@ -975,8 +1103,8 @@ export default function App() {
         await sheetsService.saveOrder(url, ord);
       }
       // 4. Sync admin settings
-      const adminUsername = systemSettings.adminUsername || localStorage.getItem('rp_admin_username') || 'admin';
-      const adminPasscode = systemSettings.adminPasscode || localStorage.getItem('rp_admin_passcode') || 'admin123';
+      const adminUsername = systemSettings.adminUsername || 'admin';
+      const adminPasscode = systemSettings.adminPasscode || 'admin123';
       await sheetsService.saveAdminSettings(url, systemSettings, adminUsername, adminPasscode);
       // 5. Sync catalog products
       for (const cp of catalogProducts) {
@@ -1291,20 +1419,26 @@ export default function App() {
     setIsSubmitting(true);
     
     const itemsToProcess = checkedItems || cart;
-    const subtotal = itemsToProcess.reduce((acc, item) => acc + (Number(item.product.basePrice) * Number(item.quantity)), 0);
+    const subtotal = itemsToProcess.reduce((acc, item) => {
+      const uPrice = item.unitPrice ?? getProductUnitPrice(item.product, item.selectedSize, item.selectedColor);
+      return acc + (uPrice * Number(item.quantity));
+    }, 0);
     const shippingCost = formData.shippingCost !== undefined ? formData.shippingCost : (subtotal >= 500 ? 0 : 15.00);
     const finalAmount = subtotal + shippingCost;
 
-    const lineItems = itemsToProcess.map(item => ({
-      productId: item.product.id,
-      productName: item.product.name,
-      imageUrl: item.product.imageUrl,
-      quantity: Number(item.quantity),
-      price: Number(item.product.basePrice),
-      selectedSize: item.selectedSize,
-      selectedColor: item.selectedColor,
-      customDetails: item.customDetails
-    }));
+    const lineItems = itemsToProcess.map(item => {
+      const uPrice = item.unitPrice ?? getProductUnitPrice(item.product, item.selectedSize, item.selectedColor);
+      return {
+        productId: item.product.id,
+        productName: item.product.name,
+        imageUrl: getItemColorImage(item.product, item.selectedColor),
+        quantity: Number(item.quantity),
+        price: uPrice,
+        selectedSize: item.selectedSize,
+        selectedColor: item.selectedColor,
+        customDetails: item.customDetails
+      };
+    });
 
     const serial = 1000 + orders.length + 1;
     const orderNo = `${systemSettings.orderPrefix || 'ARH-2026'}-${serial}`;
@@ -1354,7 +1488,7 @@ export default function App() {
     if (appsScriptConfig.isConnected && appsScriptConfig.webAppUrl) {
       const url = appsScriptConfig.webAppUrl;
       sheetsService.savePortal(url, newPortal);
-      syncPortalProductsToSheets(url, newPortal.productIds, newPortal.companyId);
+      syncPortalProductsToSheets(url, newPortal.productIds, newPortal.companyId, newPortal.customPrices);
     }
   };
 
@@ -1367,7 +1501,7 @@ export default function App() {
     if (appsScriptConfig.isConnected && appsScriptConfig.webAppUrl) {
       const url = appsScriptConfig.webAppUrl;
       sheetsService.savePortal(url, updatedPortal);
-      syncPortalProductsToSheets(url, updatedPortal.productIds, updatedPortal.companyId);
+      syncPortalProductsToSheets(url, updatedPortal.productIds, updatedPortal.companyId, updatedPortal.customPrices);
     }
   };
 
@@ -1401,7 +1535,20 @@ export default function App() {
     if (!activePublicPortal) throw new Error('No active portal selected');
 
     const portalCompany = companies.find(c => c.id === activePublicPortal.companyId) || activeCompany;
-    const subtotal = orderData.items.reduce((acc, it) => acc + (it.product.basePrice * it.quantity), 0);
+    const itemsProcessed = orderData.items.map(it => {
+      const uPrice = (it as any).unitPrice ?? getProductUnitPrice(it.product, it.selectedSize, it.selectedColor, activePublicPortal);
+      return {
+        productId: it.product.id,
+        productName: it.product.name,
+        imageUrl: getItemColorImage(it.product, it.selectedColor),
+        quantity: it.quantity,
+        price: uPrice,
+        selectedSize: it.selectedSize,
+        selectedColor: it.selectedColor,
+        customDetails: it.customDetails
+      };
+    });
+    const subtotal = itemsProcessed.reduce((acc, it) => acc + (it.price * it.quantity), 0);
     const serial = 1000 + orders.length + 1;
     const orderNo = `${systemSettings.orderPrefix || 'ARH-2026'}-${serial}`;
 
@@ -1418,16 +1565,7 @@ export default function App() {
       notes: orderData.notes,
       portalId: activePublicPortal?.id,
       portalName: activePublicPortal?.name,
-      items: orderData.items.map(it => ({
-        productId: it.product.id,
-        productName: it.product.name,
-        imageUrl: it.product.imageUrl,
-        quantity: it.quantity,
-        price: it.product.basePrice,
-        selectedSize: it.selectedSize,
-        selectedColor: it.selectedColor,
-        customDetails: it.customDetails
-      })),
+      items: itemsProcessed,
       status: 'Pending Approval',
       totalAmount: subtotal,
       createdAt: new Date().toISOString()
@@ -1473,7 +1611,7 @@ export default function App() {
   const scopedProducts = getCompanyProducts(activeCompany, products);
 
   // Helper to ensure selected portal products exist in Google Sheets
-  const syncPortalProductsToSheets = (url: string, productIds?: string[], companyId?: string) => {
+  const syncPortalProductsToSheets = (url: string, productIds?: string[], companyId?: string, customPrices?: Record<string, number>) => {
     if (!url) return;
     const targetCompany = companies.find(c => c.id === companyId) || activeCompany;
 
@@ -1509,7 +1647,11 @@ export default function App() {
     idsToSync.forEach(id => {
       const prod = productMap.get(id);
       if (prod) {
-        sheetsService.saveProduct(url, prod);
+        const portalDisplayPrice = customPrices?.[id];
+        const prodToSave = (portalDisplayPrice !== undefined && portalDisplayPrice > 0)
+          ? { ...prod, basePrice: portalDisplayPrice }
+          : prod;
+        sheetsService.saveProduct(url, prodToSave);
       }
     });
   };
@@ -1740,6 +1882,7 @@ export default function App() {
                 appsScriptUrl={appsScriptConfig.isConnected ? appsScriptConfig.webAppUrl : undefined}
                 orders={orders}
                 onUpdateOrders={handleUpdateOrders}
+                onUpdateOrderStatus={(orderId, status) => handleUpdateOrders(orders.map(o => o.id === orderId ? { ...o, status } : o))}
               />
             )}
 

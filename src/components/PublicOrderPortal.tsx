@@ -5,6 +5,8 @@
 
 import React, { useState } from 'react';
 import { OrderPortal, Product, CompanyProfile, Order, OrderItem, SystemSettings } from '../types';
+import { getProductUnitPrice } from '../utils/pricing';
+import { getItemColorImage } from '../utils/colorUtils';
 import ProductImageCarousel from './ProductImageCarousel';
 import {
   ShoppingBag,
@@ -95,7 +97,7 @@ export default function PublicOrderPortal({
   const [shopperPhone, setShopperPhone] = useState('');
   const [fbMessengerLink, setFbMessengerLink] = useState('');
   const [shopperEmail, setShopperEmail] = useState('');
-  const [deliveryDept, setDeliveryDept] = useState(company.deliveryAddress || '');
+  const [deliveryDept, setDeliveryDept] = useState('');
   const [poNumber, setPoNumber] = useState('');
   const [orderNotes, setOrderNotes] = useState('');
 
@@ -110,6 +112,7 @@ export default function PublicOrderPortal({
     const selectedSize = getSize(product);
     const selectedColor = getColor(product);
     const customDetails = getCustoms(product);
+    const unitPrice = getProductUnitPrice(product, selectedSize, selectedColor, portal);
 
     const compositeId = `${product.id}_${selectedSize || ''}_${selectedColor || ''}_${JSON.stringify(customDetails)}`;
 
@@ -118,6 +121,7 @@ export default function PublicOrderPortal({
       if (existingIdx > -1) {
         const updated = [...prev];
         updated[existingIdx].quantity += qty;
+        updated[existingIdx].unitPrice = unitPrice;
         return updated;
       }
       return [
@@ -128,7 +132,8 @@ export default function PublicOrderPortal({
           quantity: qty,
           selectedSize,
           selectedColor,
-          customDetails
+          customDetails,
+          unitPrice
         }
       ];
     });
@@ -154,14 +159,14 @@ export default function PublicOrderPortal({
   };
 
   const cartSubtotal = cartItems.reduce(
-    (sum, item) => sum + item.product.basePrice * item.quantity,
+    (sum, item) => sum + (item.unitPrice ?? getProductUnitPrice(item.product, item.selectedSize, item.selectedColor, portal)) * item.quantity,
     0
   );
 
   const handleCheckoutSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!shopperName.trim() || !shopperPhone.trim() || !shopperEmail.trim() || !deliveryDept.trim()) {
-      alert('Please fill out all required order details (Customer Name, Contact Number, Corporate Email, and Delivery Address).');
+      alert('Please fill out all required order details (Customer Name, Contact Number, Corporate Email, and Address).');
       return;
     }
     if (cartItems.length === 0) {
@@ -184,8 +189,9 @@ export default function PublicOrderPortal({
           quantity: item.quantity,
           selectedSize: item.selectedSize,
           selectedColor: item.selectedColor,
-          customDetails: item.customDetails
-        }))
+          customDetails: item.customDetails,
+          unitPrice: item.unitPrice ?? getProductUnitPrice(item.product, item.selectedSize, item.selectedColor, portal)
+        })) as any
       });
 
       setSubmittedOrder(createdOrder);
@@ -234,7 +240,7 @@ export default function PublicOrderPortal({
   if (submittedOrder) {
     return (
       <div className="min-h-screen bg-gray-50 py-12 px-4 sm:px-8 font-sans">
-        <div className="max-w-2xl mx-auto bg-white border border-black rounded-3xl p-6 sm:p-10 shadow-xl space-y-8 animate-fade-in">
+        <div className="max-w-2xl mx-auto bg-white border border-black rounded-3xl p-6 sm:p-10 shadow-xl space-y-8 animate-fade-in printable-area">
           {/* Header */}
           <div className="text-center space-y-3 border-b border-gray-100 pb-6">
             <div className="w-16 h-16 bg-emerald-100 border border-emerald-300 text-emerald-700 rounded-full flex items-center justify-center mx-auto">
@@ -261,7 +267,7 @@ export default function PublicOrderPortal({
               <span className="font-bold text-black">{submittedOrder.contactEmail}</span>
             </div>
             <div className="flex justify-between border-b border-gray-200 pb-2">
-              <span className="text-gray-500">Delivery Office/Dept:</span>
+              <span className="text-gray-500">Address / Dept:</span>
               <span className="font-bold text-black">{submittedOrder.deliveryAddress}</span>
             </div>
             <div className="flex justify-between">
@@ -295,7 +301,7 @@ export default function PublicOrderPortal({
           </div>
 
           {/* Action Buttons */}
-          <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-4 border-t border-gray-100">
+          <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-4 border-t border-gray-100 no-print">
             <button
               onClick={() => window.print()}
               className="w-full sm:w-auto bg-white border border-gray-300 text-black font-bold text-xs uppercase tracking-wider py-3 px-5 rounded-xl hover:bg-gray-50 transition-colors cursor-pointer flex items-center justify-center gap-2"
@@ -352,6 +358,7 @@ export default function PublicOrderPortal({
               <div className="relative border border-gray-200 rounded-2xl overflow-hidden shadow-xs">
                 <ProductImageCarousel
                   product={product}
+                  selectedColor={currentColor}
                   showFavoriteButton={false}
                   aspectClass="aspect-square"
                   className="w-full"
@@ -385,7 +392,7 @@ export default function PublicOrderPortal({
                 </h1>
                 <div className="mt-3 flex items-baseline gap-2">
                   <span className="text-2xl font-black text-black font-mono">
-                    {systemSettings.currencySymbol || 'Php'} {product.basePrice.toFixed(2)}
+                    {systemSettings.currencySymbol || 'Php'} {getProductUnitPrice(product, getSize(product), getColor(product), portal).toFixed(2)}
                   </span>
                   <span className="text-xs text-gray-500 font-mono">/ {product.unit}</span>
                 </div>
@@ -523,7 +530,7 @@ export default function PublicOrderPortal({
                     <div className="text-right font-mono">
                       <span className="text-[10px] text-gray-400 block font-bold uppercase">Subtotal</span>
                       <span className="text-lg font-black text-black">
-                        {systemSettings.currencySymbol || 'Php'} {(product.basePrice * currentQty).toFixed(2)}
+                        {systemSettings.currencySymbol || 'Php'} {(getProductUnitPrice(product, getSize(product), getColor(product), portal) * currentQty).toFixed(2)}
                       </span>
                     </div>
                   </div>
@@ -560,7 +567,7 @@ export default function PublicOrderPortal({
               <img
                 src={company.logoUrl}
                 alt={company.name}
-                className="w-10 h-10 rounded-xl object-cover border border-gray-200 shrink-0"
+                className="w-10 h-10 object-contain shrink-0"
               />
             ) : (
               <div className="w-10 h-10 rounded-xl bg-black text-white font-bold font-mono text-sm flex items-center justify-center shrink-0 uppercase">
@@ -656,6 +663,7 @@ export default function PublicOrderPortal({
                     <div className="relative aspect-4/3 border-b border-gray-100 overflow-hidden">
                       <ProductImageCarousel
                         product={product}
+                        selectedColor={currentColor}
                         onImageClick={() => setSelectedDetailProduct(product)}
                         showFavoriteButton={false}
                         aspectClass="aspect-4/3"
@@ -683,7 +691,7 @@ export default function PublicOrderPortal({
 
                       <div className="flex items-baseline justify-between border-t border-gray-100 pt-2">
                         <span className="text-lg font-black text-black font-mono">
-                          {systemSettings.currencySymbol || 'Php'} {product.basePrice.toFixed(2)}
+                          {systemSettings.currencySymbol || 'Php'} {getProductUnitPrice(product, getSize(product), getColor(product), portal).toFixed(2)}
                           <span className="text-[10px] text-gray-400 font-normal"> / {product.unit}</span>
                         </span>
                         {product.minQuantity > 1 ? (
@@ -824,7 +832,7 @@ export default function PublicOrderPortal({
                             </button>
                           </div>
                           <span className="text-[10px] text-gray-400 font-mono">
-                            Total: {systemSettings.currencySymbol || 'Php'} {(product.basePrice * currentQty).toFixed(2)}
+                            Total: {systemSettings.currencySymbol || 'Php'} {(getProductUnitPrice(product, getSize(product), getColor(product), portal) * currentQty).toFixed(2)}
                           </span>
                         </div>
                       </div>
@@ -901,14 +909,28 @@ export default function PublicOrderPortal({
               <div className="max-h-48 overflow-y-auto border border-gray-200 rounded-2xl p-3 space-y-2 custom-scrollbar">
                 {cartItems.map(item => (
                   <div key={item.id} className="p-2.5 bg-gray-50 rounded-xl flex items-center justify-between gap-3 text-xs">
-                    <div className="min-w-0">
-                      <h5 className="font-bold text-black uppercase truncate">{item.product.name}</h5>
-                      <span className="text-[10px] text-gray-500 font-mono block">
-                        {[
-                          item.selectedSize && `Size: ${item.selectedSize}`,
-                          item.selectedColor && `Color: ${item.selectedColor}`
-                        ].filter(Boolean).join(' · ')}
-                      </span>
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      {getItemColorImage(item.product, item.selectedColor) ? (
+                        <img
+                          src={getItemColorImage(item.product, item.selectedColor)}
+                          alt={item.product.name}
+                          className="w-8 h-8 rounded-lg object-cover border border-gray-200 shrink-0"
+                          referrerPolicy="no-referrer"
+                        />
+                      ) : (
+                        <div className="w-8 h-8 rounded-lg bg-gray-200 flex items-center justify-center shrink-0 font-mono text-xs">
+                          📦
+                        </div>
+                      )}
+                      <div className="min-w-0">
+                        <h5 className="font-bold text-black uppercase truncate">{item.product.name}</h5>
+                        <span className="text-[10px] text-gray-500 font-mono block">
+                          {[
+                            item.selectedSize && `Size: ${item.selectedSize}`,
+                            item.selectedColor && `Color: ${item.selectedColor}`
+                          ].filter(Boolean).join(' · ')}
+                        </span>
+                      </div>
                     </div>
 
                     <div className="flex items-center gap-3 shrink-0">
@@ -929,7 +951,7 @@ export default function PublicOrderPortal({
                       </div>
 
                       <span className="font-mono font-bold text-black">
-                        {systemSettings.currencySymbol || 'Php'} {(item.product.basePrice * item.quantity).toFixed(2)}
+                        {systemSettings.currencySymbol || 'Php'} {((item.unitPrice ?? getProductUnitPrice(item.product, item.selectedSize, item.selectedColor, portal)) * item.quantity).toFixed(2)}
                       </span>
 
                       <button
@@ -955,7 +977,7 @@ export default function PublicOrderPortal({
 
             {/* Shopper Details Form */}
             <form onSubmit={handleCheckoutSubmit} className="space-y-4 pt-2 border-t border-gray-100">
-              <h4 className="text-xs font-mono font-bold uppercase text-gray-400">Shopper & Delivery Details</h4>
+              <h4 className="text-xs font-mono font-bold uppercase text-gray-400">Shopper & Address Details</h4>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="space-y-1">
@@ -1022,7 +1044,7 @@ export default function PublicOrderPortal({
 
               <div className="space-y-1">
                 <label className="block text-[10px] uppercase font-mono font-bold text-gray-700">
-                  Department / Delivery Address <span className="text-red-500">*</span>
+                  Department / Address <span className="text-red-500">*</span>
                 </label>
                 <input
                   type="text"
