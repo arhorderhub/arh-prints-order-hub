@@ -855,6 +855,13 @@ export default function AdminDashboard({
                           </div>
                         )}
 
+                        )}
+                        <span className="text-[9px] bg-gray-50 text-gray-600 px-2 py-1 rounded-md font-mono font-bold border border-gray-100 flex items-center gap-1">
+                          <Key className="w-3 h-3 text-gray-400" />
+                          {co.username} : {co.passcode}
+                        </span>
+                      </div>
+
                       <div className="space-y-1">
                         <div className="flex items-center justify-between">
                           <h4 className="font-extrabold text-sm uppercase text-black leading-tight tracking-tight group-hover:underline">
