@@ -3,8 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useMemo } from 'react';
-import { OrderPortal, Product, CompanyProfile, SystemSettings, Order } from '../types';
+import React, { useState, useMemo, useCallback } from 'react';
+import { OrderPortal, Product, CompanyProfile, SystemSettings, Order, getDisplayPurchaserName } from '../types';
 import {
   Store,
   Plus,
@@ -213,46 +213,57 @@ export default function OrderPortals({
     });
   };
 
+  // Helper to determine if an order belongs specifically to a given portal link
+  const isOrderForPortal = useCallback((order: Order, portal: OrderPortal) => {
+    if (!portal) return false;
+
+    const pId = (portal.id || '').trim().toLowerCase();
+    const pToken = (portal.shareToken || '').trim().toLowerCase();
+    const pName = (portal.name || '').trim().toLowerCase();
+    const pCompName = (portal.companyName || activeCompany?.name || '').trim().toLowerCase();
+
+    const oPortalId = (order.portalId || '').trim().toLowerCase();
+    const oPortalName = (order.portalName || '').trim().toLowerCase();
+    const oNotes = (order.notes || '').toLowerCase();
+    const oComp = (order.companyName || '').trim().toLowerCase();
+
+    // 1. Explicit portal ID / shareToken match
+    if (oPortalId) {
+      return oPortalId === pId || (Boolean(pToken) && oPortalId === pToken);
+    }
+
+    // 2. Explicit portal name match
+    if (oPortalName) {
+      return Boolean(pName) && oPortalName === pName;
+    }
+
+    // 3. Notes contains "[order portal: <name>]"
+    if (pName && oNotes.includes(`[order portal: ${pName}`)) {
+      return true;
+    }
+
+    // If order notes explicitly tags a DIFFERENT portal name, do not match
+    if (oNotes.includes('[order portal:')) {
+      return false;
+    }
+
+    // 4. Fallback ONLY if order has NO explicit portalId, portalName, or note tag
+    // AND the company has only ONE storefront portal link
+    const isPortalOrderType = order.id.startsWith('ord-portal-') || order.status === 'Pending Approval';
+    if (isPortalOrderType && companyPortals.length === 1) {
+      if (oComp && pCompName && oComp === pCompName) {
+        return true;
+      }
+    }
+
+    return false;
+  }, [activeCompany, companyPortals.length]);
+
   // Compute orders belonging specifically to the currently selected portal
   const editingPortalOrders = useMemo(() => {
     if (!editingPortal) return [];
-    const pId = (editingPortal.id || '').trim().toLowerCase();
-    const pToken = (editingPortal.shareToken || '').trim().toLowerCase();
-    const pName = (editingPortal.name || '').trim().toLowerCase();
-    const pCompName = (editingPortal.companyName || activeCompany?.name || '').trim().toLowerCase();
-
-    return orders.filter(o => {
-      const oPortalId = (o.portalId || '').trim().toLowerCase();
-      const oPortalName = (o.portalName || '').trim().toLowerCase();
-      const oNotes = (o.notes || '').toLowerCase();
-
-      // 1. Match portal ID or shareToken
-      if (oPortalId && (oPortalId === pId || (pToken && oPortalId === pToken))) {
-        return true;
-      }
-
-      // 2. Match portal name (case-insensitive)
-      if (oPortalName && pName && oPortalName === pName) {
-        return true;
-      }
-
-      // 3. Notes contains "[order portal: <name>]"
-      if (pName && oNotes.includes(`[order portal: ${pName}`)) {
-        return true;
-      }
-
-      // 4. Fallback for portal orders belonging to the active company
-      const isPortalOrder = o.id.startsWith('ord-portal-') || o.status === 'Pending Approval' || Boolean(o.portalId) || Boolean(o.portalName) || oNotes.includes('[order portal:');
-      if (isPortalOrder) {
-        const oComp = (o.companyName || '').trim().toLowerCase();
-        if (oComp && pCompName && oComp === pCompName) {
-          return true;
-        }
-      }
-
-      return false;
-    });
-  }, [orders, editingPortal, activeCompany]);
+    return orders.filter(o => isOrderForPortal(o, editingPortal));
+  }, [orders, editingPortal, isOrderForPortal]);
 
   const filteredAndSortedPortalOrders = useMemo(() => {
     const list = editingPortalOrders.filter(o => {
@@ -263,9 +274,11 @@ export default function OrderPortals({
         const q = orderSearch.toLowerCase();
         const matchesNum = (o.orderNumber || '').toLowerCase().includes(q) || (o.id || '').toLowerCase().includes(q);
         const matchesPO = (o.poNumber || '').toLowerCase().includes(q);
-        const matchesPerson = (o.contactPerson || '').toLowerCase().includes(q);
+        const matchesPerson = (o.contactPerson || '').toLowerCase().includes(q) || o.items.some(i => (i.submitterName || '').toLowerCase().includes(q));
         const matchesEmail = (o.contactEmail || '').toLowerCase().includes(q);
-        return matchesNum || matchesPO || matchesPerson || matchesEmail;
+        const matchesAddr = (o.deliveryAddress || '').toLowerCase().includes(q);
+        const matchesNotes = (o.notes || '').toLowerCase().includes(q);
+        return matchesNum || matchesPO || matchesPerson || matchesEmail || matchesAddr || matchesNotes;
       }
       return true;
     });
@@ -854,12 +867,12 @@ export default function OrderPortals({
                         <span className="text-[10px] font-mono uppercase font-bold text-gray-400 block mb-0.5">Purchaser / Submitter</span>
                         <div className="font-extrabold text-black flex items-center gap-1.5">
                           <User className="w-3.5 h-3.5 text-gray-400" />
-                          <span>{ord.contactPerson || 'N/A'}</span>
+                          <span>{getDisplayPurchaserName(ord)}</span>
                         </div>
                       </div>
 
                       <div>
-                        <span className="text-[10px] font-mono uppercase font-bold text-gray-400 block mb-0.5">Email / Phone</span>
+                        <span className="text-[10px] font-mono uppercase font-bold text-gray-400 block mb-0.5">Email / Phone / Messenger</span>
                         <div className="font-medium text-gray-800 space-y-0.5">
                           {ord.contactEmail && (
                             <div className="flex items-center gap-1 truncate">
@@ -873,7 +886,20 @@ export default function OrderPortals({
                               <span>{ord.contactNumber}</span>
                             </div>
                           )}
-                          {!ord.contactEmail && !ord.contactNumber && <span className="text-gray-400">N/A</span>}
+                          {ord.fbMessengerLink && (
+                            <div className="flex items-center gap-1 truncate pt-0.5">
+                              <a
+                                href={ord.fbMessengerLink.startsWith('http') ? ord.fbMessengerLink : `https://${ord.fbMessengerLink}`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-[10px] text-blue-600 font-bold hover:underline inline-flex items-center gap-1"
+                              >
+                                <span>💬 FB Messenger Link</span>
+                                <ExternalLink className="w-2.5 h-2.5" />
+                              </a>
+                            </div>
+                          )}
+                          {!ord.contactEmail && !ord.contactNumber && !ord.fbMessengerLink && <span className="text-gray-400">N/A</span>}
                         </div>
                       </div>
 
@@ -881,7 +907,7 @@ export default function OrderPortals({
                         <span className="text-[10px] font-mono uppercase font-bold text-gray-400 block mb-0.5">Address / Dept</span>
                         <div className="font-medium text-gray-800 flex items-start gap-1.5">
                           <MapPin className="w-3.5 h-3.5 text-gray-400 shrink-0 mt-0.5" />
-                          <span className="line-clamp-2">{ord.deliveryAddress || 'Standard Corporate Delivery'}</span>
+                          <span className="line-clamp-2">{ord.deliveryAddress || 'No address specified'}</span>
                         </div>
                       </div>
 
@@ -889,7 +915,7 @@ export default function OrderPortals({
                         <span className="text-[10px] font-mono uppercase font-bold text-gray-400 block mb-0.5">PO Number &amp; Notes</span>
                         <div className="font-mono text-gray-800 space-y-0.5">
                           {ord.poNumber && <div className="font-bold text-black">PO: {ord.poNumber}</div>}
-                          {ord.notes && <div className="text-[11px] italic text-gray-600 line-clamp-2">"{ord.notes}"</div>}
+                          {ord.notes && <div className="text-[11px] italic text-gray-600 leading-snug">"{ord.notes}"</div>}
                           {!ord.poNumber && !ord.notes && <span className="text-gray-400">None provided</span>}
                         </div>
                       </div>
@@ -1082,11 +1108,7 @@ export default function OrderPortals({
             const portalUrl = getPortalUrl(portal);
 
             // Calculate total orders for this portal card
-            const portalOrderCount = orders.filter(o =>
-              o.portalId === portal.id ||
-              o.portalName === portal.name ||
-              (portal.shareToken && o.portalId === portal.shareToken)
-            ).length;
+            const portalOrderCount = orders.filter(o => isOrderForPortal(o, portal)).length;
 
             return (
               <div

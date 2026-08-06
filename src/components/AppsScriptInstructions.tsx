@@ -33,6 +33,20 @@ function doGet(e) {
   // Create sheets if they do not exist
   initSheets(sheet);
   
+  if (action === "getAllData" || action === "syncAll" || action === "getInitialData") {
+    var adminData = getTableData(sheet, "Admin");
+    return getJsonOutput({
+      status: "success",
+      products: getTableData(sheet, "Products"),
+      catalogProducts: getTableData(sheet, "CatalogProducts"),
+      quotes: getTableData(sheet, "Quotes"),
+      companies: getTableData(sheet, "Companies"),
+      portals: getTableData(sheet, "Portals"),
+      orders: getOrdersWithItems(sheet),
+      adminSettings: adminData.length > 0 ? adminData[0] : {}
+    });
+  }
+
   if (action === "getProducts") {
     return getJsonOutput(getTableData(sheet, "Products"));
   }
@@ -226,7 +240,7 @@ function initSheets(ss) {
     "Companies": ["Company ID", "Company Name", "Contact Person", "Contact Email", "Contact Phone", "Delivery Address", "Username", "Passcode", "PO Required", "Logo URL", "Approved Products", "Custom Products"],
     "Portals": ["Portal ID", "Company ID", "Company Name", "Portal Name", "Description", "Status", "Product IDs", "Portal Pricing", "Variant Pricing", "Created At", "Updated At", "Share Token"],
     "Admin": ["Hub Name", "Short Hub Name", "Order Prefix", "Currency Symbol", "Admin Username", "Admin Passcode", "Color Theme", "Admin Email", "App Logo URL"],
-    "Quotes": ["Enquiry ID", "Enquiry Number", "Product ID", "Product Name", "Product Category", "Company ID", "Company Name", "Contact Person", "Contact Email", "Contact Phone", "Quantity", "Preferred Branding Method", "Preferred Color", "Notes", "Status", "Created At", "Quoted Unit Price", "Quoted Total Price", "Quoted Tax", "Quoted Shipping", "Quote Notes", "Quoted Valid Until", "Quoted At", "Quoted Line Items", "Requested Product Addition", "Requested Product Addition At", "Requested Product Notes"]
+    "Quotes": ["Enquiry ID", "Enquiry Number", "Product ID", "Product Name", "Product Category", "Company ID", "Company Name", "Contact Person", "Contact Email", "Contact Phone", "Quantity", "Preferred Branding Method", "Preferred Color", "Preferred Size", "Notes", "Status", "Created At", "Quoted Unit Price", "Quoted Total Price", "Quoted Tax", "Quoted Shipping", "Quote Notes", "Quoted Valid Until", "Quoted At", "Quoted Line Items", "Requested Product Addition", "Requested Product Addition At", "Requested Product Notes"]
   };
   
   for (var i = 0; i < sheets.length; i++) {
@@ -283,18 +297,18 @@ function getOrdersWithItems(ss) {
     
     return {
       id: orderId,
-      orderNumber: order.OrderNumber || order["Order Number"],
-      companyName: order.CompanyName || order["Company Name"],
-      contactEmail: order.ContactEmail || order["Contact Email"],
-      contactPerson: order.ContactPerson || order["Contact Person"],
-      contactNumber: order.ContactNumber || order["Contact Number"] || "",
-      fbMessengerLink: order.FBMessengerLink || order["FB Messenger Link"] || "",
-      deliveryAddress: order.DeliveryAddress || order["Delivery Address"],
-      poNumber: order.PONumber || order["PO Number"] || "",
-      totalAmount: Number(order.TotalAmount || order["Total Amount"]),
+      orderNumber: order.OrderNumber || order["Order Number"] || order.OrderNo || order["Order #"] || order.id || "",
+      companyName: order.CompanyName || order["Company Name"] || order.Company || order.Client || "",
+      contactEmail: order.ContactEmail || order["Contact Email"] || order.Email || order.SubmitterEmail || order["Submitter Email"] || order.CustomerEmail || "",
+      contactPerson: order.ContactPerson || order["Contact Person"] || order.Purchaser || order["Purchaser / Submitter"] || order.CustomerName || order["Customer Name"] || order.SubmitterName || order["Submitter Name"] || order.Name || order["Shopper Name"] || "",
+      contactNumber: order.ContactNumber || order["Contact Number"] || order.ContactPhone || order.Phone || order.Mobile || "",
+      fbMessengerLink: order.FBMessengerLink || order["FB Messenger Link"] || order.Messenger || order["Facebook Messenger Link"] || "",
+      deliveryAddress: order.DeliveryAddress || order["Delivery Address"] || order.Address || order["Address / Dept"] || order["Department / Address"] || order.DeliveryDept || "",
+      poNumber: order.PONumber || order["PO Number"] || order["PO / Cost Center"] || order.POCostCenter || "",
+      totalAmount: Number(order.TotalAmount || order["Total Amount"] || order.Amount || 0),
       status: order.Status || "Pending Approval",
-      createdAt: order.CreatedAt || order["Created At"],
-      notes: order.Notes || "",
+      createdAt: order.CreatedAt || order["Created At"] || order.Date || new Date().toISOString(),
+      notes: order.Notes || order.SpecialNotes || order["Order Notes"] || order.Remarks || "",
       portalId: order.PortalID || order["Portal ID"] || order.portalId || "",
       portalName: order.PortalName || order["Portal Name"] || order.portalName || "",
       items: orderItems
@@ -772,7 +786,7 @@ function saveCatalogProduct(ss, product) {
 
 function saveQuoteEnquiry(ss, enquiry) {
   var sheet = ss.getSheetByName("Quotes");
-  var expectedHeaders = ["Enquiry ID", "Enquiry Number", "Product ID", "Product Name", "Product Category", "Company ID", "Company Name", "Contact Person", "Contact Email", "Contact Phone", "Quantity", "Preferred Branding Method", "Preferred Color", "Notes", "Status", "Created At", "Quoted Unit Price", "Quoted Total Price", "Quoted Tax", "Quoted Shipping", "Quote Notes", "Quoted Valid Until", "Quoted At", "Quoted Line Items", "Requested Product Addition", "Requested Product Addition At", "Requested Product Notes"];
+  var expectedHeaders = ["Enquiry ID", "Enquiry Number", "Product ID", "Product Name", "Product Category", "Company ID", "Company Name", "Contact Person", "Contact Email", "Contact Phone", "Quantity", "Preferred Branding Method", "Preferred Color", "Preferred Size", "Notes", "Status", "Created At", "Quoted Unit Price", "Quoted Total Price", "Quoted Tax", "Quoted Shipping", "Quote Notes", "Quoted Valid Until", "Quoted At", "Quoted Line Items", "Requested Product Addition", "Requested Product Addition At", "Requested Product Notes"];
   var data = ensureHeaders(sheet, expectedHeaders);
   var headers = data[0];
   
@@ -809,6 +823,7 @@ function saveQuoteEnquiry(ss, enquiry) {
     "Quantity": enquiry.quantity || 1,
     "Preferred Branding Method": enquiry.preferredBrandingMethod || "",
     "Preferred Color": enquiry.preferredColor || "",
+    "Preferred Size": enquiry.preferredSize || "",
     "Notes": enquiry.notes || "",
     "Status": enquiry.status || "New",
     "Created At": enquiry.createdAt || new Date().toISOString(),
@@ -1093,11 +1108,11 @@ function getJsonOutput(obj) {
               </div>
             </div>
 
-            {/* Sheet 5: AdminSettings */}
+            {/* Sheet 6: AdminSettings */}
             <div className="border border-gray-200 bg-gray-50 p-3 space-y-2 rounded-xl">
               <div className="flex items-center justify-between border-b border-gray-100 pb-1.5">
                 <span className="font-mono text-[11px] font-bold text-black bg-white px-2 py-0.5 border border-black rounded-md">
-                  ⚙️ Tab 5: Admin
+                  ⚙️ Tab 6: Admin
                 </span>
                 <span className="text-[10px] text-gray-400 font-mono">Global Admin portal configurations</span>
               </div>
@@ -1105,6 +1120,26 @@ function getJsonOutput(obj) {
                 <span className="block text-[9px] uppercase font-mono font-bold text-gray-400">Column Headers (Row 1):</span>
                 <div className="flex flex-wrap gap-1">
                   {["Hub Name", "Short Hub Name", "Order Prefix", "Currency Symbol", "Admin Username", "Admin Passcode", "Color Theme"].map(col => (
+                    <span key={col} className="bg-white border border-gray-100 rounded px-1.5 py-0.5 font-mono text-[10px] text-neutral-800 font-semibold shadow-xs">
+                      {col}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {/* Sheet 7: Quotes */}
+            <div className="border border-gray-200 bg-gray-50 p-3 space-y-2 rounded-xl">
+              <div className="flex items-center justify-between border-b border-gray-100 pb-1.5">
+                <span className="font-mono text-[11px] font-bold text-black bg-white px-2 py-0.5 border border-black rounded-md">
+                  📄 Tab 7: Quotes
+                </span>
+                <span className="text-[10px] text-gray-400 font-mono">Quote enquiry requests and quotations</span>
+              </div>
+              <div className="space-y-1">
+                <span className="block text-[9px] uppercase font-mono font-bold text-gray-400">Column Headers (Row 1):</span>
+                <div className="flex flex-wrap gap-1">
+                  {["Enquiry ID", "Enquiry Number", "Product ID", "Product Name", "Product Category", "Company ID", "Company Name", "Contact Person", "Contact Email", "Contact Phone", "Quantity", "Preferred Branding Method", "Preferred Color", "Preferred Size", "Notes", "Status", "Created At"].map(col => (
                     <span key={col} className="bg-white border border-gray-100 rounded px-1.5 py-0.5 font-mono text-[10px] text-neutral-800 font-semibold shadow-xs">
                       {col}
                     </span>

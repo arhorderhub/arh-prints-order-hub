@@ -6,7 +6,7 @@
 import React, { useState, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { motion } from 'motion/react';
-import { CompanyProfile, Order, Product } from '../types';
+import { CompanyProfile, Order, Product, getDisplayPurchaserName } from '../types';
 import ProductDetailsPage from './ProductDetailsPage';
 import ProductImageCarousel from './ProductImageCarousel';
 import {
@@ -324,7 +324,7 @@ export default function ClientDashboardModal({
       // Enable this product for the current company
       const currentList = company.enabledProductIds
         ? [...company.enabledProductIds, newProd.id]
-        : [...masterProducts.map(p => p.id), newProd.id];
+        : [newProd.id];
 
       updatedCompany.enabledProductIds = currentList;
     }
@@ -420,10 +420,10 @@ export default function ClientDashboardModal({
       }
     });
 
-    // Second pass: company custom products
+    // Second pass: company custom products belonging strictly to THIS company
     if (company.customProducts && company.customProducts.length > 0) {
       company.customProducts.forEach(cp => {
-        if (!hasExplicitEnabledList || enabledIds.includes(cp.id) || company.customProducts?.some(c => c.id === cp.id)) {
+        if (cp && cp.id) {
           productMap.set(cp.id, cp);
         }
       });
@@ -478,7 +478,7 @@ export default function ClientDashboardModal({
 
   // Toggle single allocation directly within the dashboard
   const handleToggleAllocation = (productId: string) => {
-    let currentList = company.enabledProductIds || masterProducts.map(p => p.id);
+    let currentList = company.enabledProductIds || [];
     if (currentList.includes(productId)) {
       currentList = currentList.filter(id => id !== productId);
     } else {
@@ -645,7 +645,7 @@ export default function ClientDashboardModal({
                     <div className="flex items-start gap-2.5">
                       <Mail className="w-4 h-4 text-gray-400 shrink-0 mt-0.5" />
                       <div>
-                        <span className="block text-[8px] uppercase tracking-wider text-gray-400 font-mono font-bold">Buyer Contact Email</span>
+                        <span className="block text-[8px] uppercase tracking-wider text-gray-400 font-mono font-bold">Email</span>
                         <a href={`mailto:${company.contactEmail}`} className="font-bold text-black underline hover:text-gray-700 font-mono">
                           {company.contactEmail}
                         </a>
@@ -655,7 +655,7 @@ export default function ClientDashboardModal({
                     <div className="flex items-start gap-2.5">
                       <Phone className="w-4 h-4 text-gray-400 shrink-0 mt-0.5" />
                       <div>
-                        <span className="block text-[8px] uppercase tracking-wider text-gray-400 font-mono font-bold">Office Hotline</span>
+                        <span className="block text-[8px] uppercase tracking-wider text-gray-400 font-mono font-bold">Phone</span>
                         <span className="font-bold text-black font-mono">{company.contactPhone}</span>
                       </div>
                     </div>
@@ -663,7 +663,7 @@ export default function ClientDashboardModal({
                     <div className="flex items-start gap-2.5">
                       <MapPin className="w-4 h-4 text-gray-400 shrink-0 mt-0.5" />
                       <div>
-                        <span className="block text-[8px] uppercase tracking-wider text-gray-400 font-mono font-bold">Standard Address</span>
+                        <span className="block text-[8px] uppercase tracking-wider text-gray-400 font-mono font-bold">Address</span>
                         <p className="font-semibold text-black leading-snug">{company.deliveryAddress}</p>
                       </div>
                     </div>
@@ -885,20 +885,20 @@ export default function ClientDashboardModal({
                       <div className="flex justify-between items-center border-b border-gray-200/60 pb-2">
                         <div>
                           <span className="block text-[10px] uppercase font-mono tracking-wider font-extrabold text-black">
-                            Product Image Carousel Gallery (Max 5 Images) *
+                            Product Image Carousel Gallery (Max 15 Images) *
                           </span>
                           <span className="block text-[9px] text-gray-400 font-mono">
-                            Add up to 5 product photos for buyers to slide through. Image #1 is primary cover photo.
+                            Add up to 15 product photos for buyers to slide through. Image #1 is primary cover photo.
                           </span>
                         </div>
                         <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-black text-white">
-                          {(productForm.imageUrls || []).length} / 5
+                          {(productForm.imageUrls || []).length} / 15
                         </span>
                       </div>
 
                       {/* Existing Images Thumbnails */}
                       {productForm.imageUrls && productForm.imageUrls.length > 0 && (
-                        <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5 pt-1">
+                        <div className="grid grid-cols-3 sm:grid-cols-5 gap-2.5 pt-1">
                           {productForm.imageUrls.map((img, idx) => (
                             <div key={idx} className="relative bg-white border border-gray-200 rounded-xl overflow-hidden group shadow-2xs aspect-square flex items-center justify-center">
                               {img.startsWith('http') || img.startsWith('data:') ? (
@@ -944,7 +944,7 @@ export default function ClientDashboardModal({
                       )}
 
                       {/* Add Image Input Bar */}
-                      {(!productForm.imageUrls || productForm.imageUrls.length < 5) ? (
+                      {(!productForm.imageUrls || productForm.imageUrls.length < 15) ? (
                         <div className="flex flex-col sm:flex-row gap-2 pt-2">
                           <input
                             type="text"
@@ -957,9 +957,11 @@ export default function ClientDashboardModal({
                                 e.preventDefault();
                                 if (newImgUrlInput.trim()) {
                                   const current = productForm.imageUrls || [];
-                                  const updated = [...current, newImgUrlInput.trim()];
-                                  setProductForm({ ...productForm, imageUrls: updated, imageUrl: updated[0] });
-                                  setNewImgUrlInput('');
+                                  if (current.length < 15) {
+                                    const updated = [...current, newImgUrlInput.trim()];
+                                    setProductForm({ ...productForm, imageUrls: updated, imageUrl: updated[0] });
+                                    setNewImgUrlInput('');
+                                  }
                                 }
                               }
                             }}
@@ -968,22 +970,35 @@ export default function ClientDashboardModal({
                           <div className="flex gap-2">
                             <label className="cursor-pointer bg-neutral-900 text-white hover:bg-neutral-800 rounded-xl px-3 py-2 text-[10px] font-mono uppercase font-bold tracking-wider inline-flex items-center gap-1.5 transition-colors shrink-0">
                               <Paperclip className="w-3.5 h-3.5" />
-                              <span>Upload File</span>
+                              <span>Upload File(s)</span>
                               <input
                                 type="file"
                                 accept="image/*"
+                                multiple
                                 className="hidden"
                                 onChange={(e) => {
-                                  const file = e.target.files?.[0];
-                                  if (file) {
-                                    const reader = new FileReader();
-                                    reader.onloadend = () => {
-                                      const base64String = reader.result as string;
-                                      const current = productForm.imageUrls || [];
-                                      const updated = [...current, base64String];
-                                      setProductForm({ ...productForm, imageUrls: updated, imageUrl: updated[0] });
-                                    };
-                                    reader.readAsDataURL(file);
+                                  const files = Array.from(e.target.files || []);
+                                  if (files.length > 0) {
+                                    const current = productForm.imageUrls || [];
+                                    const slotsLeft = 15 - current.length;
+                                    if (slotsLeft <= 0) return;
+                                    const filesToRead = files.slice(0, slotsLeft);
+                                    
+                                    let completedCount = 0;
+                                    const newBase64s: string[] = new Array(filesToRead.length);
+                                    
+                                    filesToRead.forEach((file: File, index: number) => {
+                                      const reader = new FileReader();
+                                      reader.onloadend = () => {
+                                        newBase64s[index] = reader.result as string;
+                                        completedCount++;
+                                        if (completedCount === filesToRead.length) {
+                                          const updated = [...current, ...newBase64s.filter(Boolean)];
+                                          setProductForm({ ...productForm, imageUrls: updated, imageUrl: updated[0] });
+                                        }
+                                      };
+                                      reader.readAsDataURL(file);
+                                    });
                                   }
                                 }}
                               />
@@ -994,9 +1009,11 @@ export default function ClientDashboardModal({
                               onClick={() => {
                                 if (newImgUrlInput.trim()) {
                                   const current = productForm.imageUrls || [];
-                                  const updated = [...current, newImgUrlInput.trim()];
-                                  setProductForm({ ...productForm, imageUrls: updated, imageUrl: updated[0] });
-                                  setNewImgUrlInput('');
+                                  if (current.length < 15) {
+                                    const updated = [...current, newImgUrlInput.trim()];
+                                    setProductForm({ ...productForm, imageUrls: updated, imageUrl: updated[0] });
+                                    setNewImgUrlInput('');
+                                  }
                                 }
                               }}
                               className="bg-black text-white px-3.5 py-2 rounded-xl text-[10px] font-mono uppercase font-bold hover:bg-neutral-800 shrink-0 cursor-pointer flex items-center gap-1"
@@ -1008,7 +1025,7 @@ export default function ClientDashboardModal({
                         </div>
                       ) : (
                         <p className="text-[10px] text-amber-600 font-mono italic pt-1">
-                          Maximum limit of 5 product images reached. Remove an image above to add a replacement.
+                          Maximum limit of 15 product images reached. Remove an image above to add a replacement.
                         </p>
                       )}
                     </div>
@@ -1513,6 +1530,24 @@ export default function ClientDashboardModal({
                                   <span>Delivery: <strong className="text-black">{p.shippingFee && p.shippingFee > 0 ? `Php ${p.shippingFee.toFixed(2)}` : 'Free Delivery'}</strong></span>
                                 </div>
                               </div>
+
+                              {/* Size Variants Badges */}
+                              {(() => {
+                                const sizeArr = (p.sizeOptions && p.sizeOptions.length > 0)
+                                  ? p.sizeOptions
+                                  : ((p as any).sizes && (p as any).sizes.length > 0 ? (p as any).sizes : []);
+                                if (sizeArr.length === 0) return null;
+                                return (
+                                  <div className="flex flex-wrap items-center gap-1 text-[9px] font-mono pt-1">
+                                    <span className="text-gray-400 uppercase font-bold mr-1">Sizes:</span>
+                                    {sizeArr.map((sz: string, idx: number) => (
+                                      <span key={idx} className="px-1.5 py-0.5 bg-gray-100 border border-gray-200 rounded-md font-bold text-gray-800">
+                                        {sz}
+                                      </span>
+                                    ))}
+                                  </div>
+                                );
+                              })()}
                             </div>
 
                             {/* Admin Specs & Allocation Toolbar */}
@@ -1590,6 +1625,24 @@ export default function ClientDashboardModal({
                               <p className="text-[10px] text-gray-500 font-mono mt-0.5">
                                 Price: <span className="font-bold text-black">Php {p.basePrice.toFixed(2)}</span> / MOQ: {p.minQuantity} {p.unit}
                               </p>
+
+                              {/* Size Variants in Compact View */}
+                              {(() => {
+                                const sizeArr = (p.sizeOptions && p.sizeOptions.length > 0)
+                                  ? p.sizeOptions
+                                  : ((p as any).sizes && (p as any).sizes.length > 0 ? (p as any).sizes : []);
+                                if (sizeArr.length === 0) return null;
+                                return (
+                                  <div className="flex flex-wrap items-center gap-1 text-[8px] font-mono mt-1">
+                                    <span className="text-gray-400 font-bold">Sizes:</span>
+                                    {sizeArr.map((sz: string, idx: number) => (
+                                      <span key={idx} className="px-1 bg-gray-100 border border-gray-200 rounded font-bold text-gray-700">
+                                        {sz}
+                                      </span>
+                                    ))}
+                                  </div>
+                                );
+                              })()}
                             </div>
                           </div>
 
@@ -1731,7 +1784,7 @@ export default function ClientDashboardModal({
                                 </span>
                               </div>
                               <span className="text-[10px] text-gray-400 block font-mono mt-0.5">
-                                Ordered: {new Date(ord.createdAt).toLocaleString()} • {ord.items.length} unique specification(s)
+                                Ordered: {new Date(ord.createdAt).toLocaleString()} • Purchaser: {getDisplayPurchaserName(ord, company.contactPerson)} • {ord.items.length} item(s)
                               </span>
                             </div>
                           </div>
@@ -1759,13 +1812,14 @@ export default function ClientDashboardModal({
                           <div className="px-5 pb-5 pt-1 bg-[#fafafa] border-t border-gray-100 space-y-4 text-xs font-mono">
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-3 border-b border-gray-100 pb-3">
                               <div>
-                                <span className="block text-[8px] uppercase tracking-wider text-gray-400 font-bold mb-1">Address</span>
-                                <p className="font-semibold text-black leading-snug">{ord.deliveryAddress}</p>
+                                <span className="block text-[8px] uppercase tracking-wider text-gray-400 font-bold mb-1">Address / Dept</span>
+                                <p className="font-semibold text-black leading-snug">{ord.deliveryAddress || company.deliveryAddress || 'No address specified'}</p>
                               </div>
                               <div>
                                 <span className="block text-[8px] uppercase tracking-wider text-gray-400 font-bold mb-1">Purchasing Rep / Customer Details</span>
                                 <p className="font-semibold text-black">
-                                  {ord.contactPerson} ({ord.contactEmail})
+                                  {getDisplayPurchaserName(ord, company.contactPerson)}
+                                  {ord.contactEmail ? ` (${ord.contactEmail})` : ''}
                                 </p>
                                 {ord.contactNumber && (
                                   <p className="text-[11px] text-gray-700 font-bold mt-1 flex items-center gap-1">
@@ -1781,7 +1835,7 @@ export default function ClientDashboardModal({
                                       rel="noopener noreferrer"
                                       className="inline-flex items-center gap-1 font-bold text-blue-600 hover:underline bg-blue-50 px-2 py-0.5 rounded border border-blue-200"
                                     >
-                                      <span>💬 FB Messenger Profile</span>
+                                      <span>💬 FB Messenger Link</span>
                                       <ExternalLink className="w-3 h-3" />
                                     </a>
                                   </p>
