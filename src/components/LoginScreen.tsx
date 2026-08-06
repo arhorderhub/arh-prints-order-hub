@@ -110,7 +110,7 @@ export default function LoginScreen({
             <img
               src={systemSettings.logoUrl}
               alt={systemSettings.hubName}
-              className="w-18 h-18 object-contain mx-auto mb-4 shrink-0"
+              className="w-25 h-25 object-contain mx-auto mb-4 shrink-0"
               referrerPolicy="no-referrer"
             />
           ) : (
