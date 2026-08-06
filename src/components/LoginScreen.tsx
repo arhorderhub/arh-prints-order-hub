@@ -110,7 +110,7 @@ export default function LoginScreen({
             <img
               src={systemSettings.logoUrl}
               alt={systemSettings.hubName}
-              className="w-16 h-16 object-contain mx-auto mb-4 shrink-0"
+              className="w-25 h-25 object-contain mx-auto mb-4 shrink-0"
               referrerPolicy="no-referrer"
             />
           ) : (
@@ -134,7 +134,7 @@ export default function LoginScreen({
 
             <div className="space-y-1">
               <label className="block text-[10px] uppercase tracking-wider text-gray-400 font-mono font-bold">
-                B2B Username
+                Username
               </label>
               <div className="relative flex items-center">
                 <User className="absolute left-3.5 w-4 h-4 text-gray-400" />
@@ -152,7 +152,7 @@ export default function LoginScreen({
 
             <div className="space-y-1">
               <label className="block text-[10px] uppercase tracking-wider text-gray-400 font-mono font-bold">
-                Portal Passcode
+                Passcode
               </label>
               <div className="relative flex items-center">
                 <KeyRound className="absolute left-3.5 w-4 h-4 text-gray-400" />
