@@ -784,7 +784,7 @@ export default function AdminDashboard({
                   className="w-4 h-4 cursor-pointer accent-black"
                 />
                 <label htmlFor="form-po-req" className="text-xs text-gray-800 font-mono font-bold select-none cursor-pointer">
-                  Require Billing Purchase Order (PO) Number to checkout
+                  Require B2B Billing Purchase Order (PO) Number to checkout
                 </label>
               </div>
 
@@ -853,8 +853,6 @@ export default function AdminDashboard({
                           <div className="w-12 h-12 rounded-2xl bg-gray-100 flex items-center justify-center font-bold text-gray-400 uppercase font-mono text-lg shrink-0">
                             {co.name.substring(0, 2)}
                           </div>
-                        )}
-
                         )}
                         <span className="text-[9px] bg-gray-50 text-gray-600 px-2 py-1 rounded-md font-mono font-bold border border-gray-100 flex items-center gap-1">
                           <Key className="w-3 h-3 text-gray-400" />
