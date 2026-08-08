@@ -5,7 +5,7 @@
 
 import React, { useState, useMemo } from 'react';
 import { Order, CartItem, getDisplayPurchaserName } from '../types';
-import { Calendar, RefreshCw, ChevronDown, ChevronUp, Clock, Package, CheckCircle2, Truck, ArrowRight, Store, Layers, ExternalLink } from 'lucide-react';
+import { Calendar, RefreshCw, ChevronDown, ChevronUp, Clock, Package, CheckCircle2, Truck, ArrowRight, Store, Layers, ExternalLink, User, MapPin, MessageCircle, ArrowUpDown } from 'lucide-react';
 
 interface OrderHistoryProps {
   orders: Order[];
@@ -13,6 +13,8 @@ interface OrderHistoryProps {
   onReorderPastOrder: (order: Order) => void;
   onUpdateOrderStatus?: (orderId: string, status: Order['status']) => void;
   appsScriptUrl?: string;
+  highlightOrderId?: string;
+  highlightOrderNumber?: string;
 }
 
 export default function OrderHistory({
@@ -20,11 +22,33 @@ export default function OrderHistory({
   selectedCompanyName,
   onReorderPastOrder,
   onUpdateOrderStatus,
-  appsScriptUrl
+  appsScriptUrl,
+  highlightOrderId,
+  highlightOrderNumber
 }: OrderHistoryProps) {
   const [expandedOrderId, setExpandedOrderId] = useState<string | null>(null);
   const [reorderedId, setReorderedId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'all' | 'portal' | 'direct'>('all');
+  const [sortOrder, setSortOrder] = useState<'newest' | 'oldest'>('newest');
+
+  // Auto expand and scroll to highlighted order if requested
+  React.useEffect(() => {
+    if (highlightOrderId || highlightOrderNumber) {
+      const match = orders.find(o =>
+        (highlightOrderId && o.id === highlightOrderId) ||
+        (highlightOrderNumber && o.orderNumber && o.orderNumber.toLowerCase() === highlightOrderNumber.toLowerCase())
+      );
+      if (match) {
+        setExpandedOrderId(match.id);
+        setTimeout(() => {
+          const el = document.getElementById(`order-record-${match.id}`);
+          if (el) {
+            el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          }
+        }, 150);
+      }
+    }
+  }, [highlightOrderId, highlightOrderNumber, orders]);
 
   // Filter orders to only show the ones matching the selected active company
   const companyOrders = useMemo(() => {
@@ -46,10 +70,18 @@ export default function OrderHistory({
   }, [companyOrders]);
 
   const displayedOrders = useMemo(() => {
-    if (activeTab === 'portal') return portalOrders;
-    if (activeTab === 'direct') return directOrders;
-    return companyOrders;
-  }, [activeTab, companyOrders, portalOrders, directOrders]);
+    let list = companyOrders;
+    if (activeTab === 'portal') list = portalOrders;
+    if (activeTab === 'direct') list = directOrders;
+
+    return [...list].sort((a, b) => {
+      const timeA = new Date(a.createdAt).getTime();
+      const timeB = new Date(b.createdAt).getTime();
+      const validA = isNaN(timeA) ? 0 : timeA;
+      const validB = isNaN(timeB) ? 0 : timeB;
+      return sortOrder === 'newest' ? validB - validA : validA - validB;
+    });
+  }, [activeTab, companyOrders, portalOrders, directOrders, sortOrder]);
 
   const toggleExpand = (id: string) => {
     setExpandedOrderId(prev => (prev === id ? null : id));
@@ -157,49 +189,68 @@ export default function OrderHistory({
           <p className="text-xs text-gray-500 font-mono mt-0.5">{selectedCompanyName} Records</p>
         </div>
 
-        {/* Source Filter Tabs Switcher */}
-        <div className="flex flex-wrap items-center gap-1.5 bg-gray-100 p-1 border border-gray-200 rounded-xl shrink-0">
-          <button
-            type="button"
-            onClick={() => setActiveTab('all')}
-            className={`px-3 py-1.5 rounded-lg text-[11px] font-mono uppercase font-extrabold flex items-center gap-1.5 transition-all cursor-pointer ${
-              activeTab === 'all'
-                ? 'bg-black text-white shadow-xs'
-                : 'text-gray-600 hover:text-black'
-            }`}
-            id="history-tab-all"
-          >
-            <Layers className="w-3.5 h-3.5" />
-            <span>All ({companyOrders.length})</span>
-          </button>
+        <div className="flex flex-wrap items-center gap-3 shrink-0">
+          {/* Sort Selector */}
+          <div className="flex items-center gap-1.5 bg-gray-100 p-1 border border-gray-200 rounded-xl">
+            <span className="text-[10px] font-mono font-bold uppercase text-gray-500 pl-2 flex items-center gap-1">
+              <ArrowUpDown className="w-3 h-3 text-gray-500" />
+              <span>Sort:</span>
+            </span>
+            <select
+              value={sortOrder}
+              onChange={(e) => setSortOrder(e.target.value as 'newest' | 'oldest')}
+              className="bg-white border border-gray-200 rounded-lg px-2.5 py-1 text-[11px] font-mono font-bold uppercase text-black focus:outline-none focus:border-black cursor-pointer shadow-2xs"
+              id="order-history-sort-select"
+            >
+              <option value="newest">Newest to Oldest</option>
+              <option value="oldest">Oldest to Newest</option>
+            </select>
+          </div>
 
-          <button
-            type="button"
-            onClick={() => setActiveTab('portal')}
-            className={`px-3 py-1.5 rounded-lg text-[11px] font-mono uppercase font-extrabold flex items-center gap-1.5 transition-all cursor-pointer ${
-              activeTab === 'portal'
-                ? 'bg-black text-white shadow-xs'
-                : 'text-gray-600 hover:text-black'
-            }`}
-            id="history-tab-portal"
-          >
-            <Store className="w-3.5 h-3.5" />
-            <span>Order Portals ({portalOrders.length})</span>
-          </button>
+          {/* Source Filter Tabs Switcher */}
+          <div className="flex flex-wrap items-center gap-1.5 bg-gray-100 p-1 border border-gray-200 rounded-xl">
+            <button
+              type="button"
+              onClick={() => setActiveTab('all')}
+              className={`px-3 py-1.5 rounded-lg text-[11px] font-mono uppercase font-extrabold flex items-center gap-1.5 transition-all cursor-pointer ${
+                activeTab === 'all'
+                  ? 'bg-black text-white shadow-xs'
+                  : 'text-gray-600 hover:text-black'
+              }`}
+              id="history-tab-all"
+            >
+              <Layers className="w-3.5 h-3.5" />
+              <span>All ({companyOrders.length})</span>
+            </button>
 
-          <button
-            type="button"
-            onClick={() => setActiveTab('direct')}
-            className={`px-3 py-1.5 rounded-lg text-[11px] font-mono uppercase font-extrabold flex items-center gap-1.5 transition-all cursor-pointer ${
-              activeTab === 'direct'
-                ? 'bg-black text-white shadow-xs'
-                : 'text-gray-600 hover:text-black'
-            }`}
-            id="history-tab-direct"
-          >
-            <Package className="w-3.5 h-3.5" />
-            <span>Direct Catalog ({directOrders.length})</span>
-          </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab('portal')}
+              className={`px-3 py-1.5 rounded-lg text-[11px] font-mono uppercase font-extrabold flex items-center gap-1.5 transition-all cursor-pointer ${
+                activeTab === 'portal'
+                  ? 'bg-black text-white shadow-xs'
+                  : 'text-gray-600 hover:text-black'
+              }`}
+              id="history-tab-portal"
+            >
+              <Store className="w-3.5 h-3.5" />
+              <span>Order Portals ({portalOrders.length})</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveTab('direct')}
+              className={`px-3 py-1.5 rounded-lg text-[11px] font-mono uppercase font-extrabold flex items-center gap-1.5 transition-all cursor-pointer ${
+                activeTab === 'direct'
+                  ? 'bg-black text-white shadow-xs'
+                  : 'text-gray-600 hover:text-black'
+              }`}
+              id="history-tab-direct"
+            >
+              <Package className="w-3.5 h-3.5" />
+              <span>Direct Catalog ({directOrders.length})</span>
+            </button>
+          </div>
         </div>
       </div>
 
@@ -262,14 +313,51 @@ export default function OrderHistory({
                       ) : null}
                       {getStatusBadge(order.status)}
                     </div>
-                    <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-500">
-                      <span className="flex items-center gap-1">
-                        <Calendar className="w-3.5 h-3.5" /> {formattedDate}
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-gray-600">
+                      <span className="flex items-center gap-1 font-mono text-[11px] text-gray-500">
+                        <Calendar className="w-3.5 h-3.5 text-gray-400" /> {formattedDate}
                       </span>
                       <span>·</span>
-                      <span>By <strong className="text-black font-semibold">{getDisplayPurchaserName(order)}</strong></span>
+                      <span className="flex items-center gap-1">
+                        <User className="w-3.5 h-3.5 text-gray-500" />
+                        <span className="text-gray-500">Customer:</span> <strong className="text-black font-extrabold">{getDisplayPurchaserName(order)}</strong>
+                      </span>
                       <span>·</span>
-                      <span className="font-bold text-black">{order.items.length} items</span>
+                      <span className="font-bold text-black font-mono">{order.items.length} items</span>
+                    </div>
+
+                    {/* Customer Address, FB Messenger Link, and Notes Badges */}
+                    <div className="flex flex-wrap items-center gap-2 pt-1">
+                      <span className="inline-flex items-center gap-1 bg-gray-50 border border-gray-200 px-2.5 py-1 rounded-md text-xs text-gray-700 font-medium" title={order.deliveryAddress}>
+                        <MapPin className="w-3.5 h-3.5 text-gray-500 shrink-0" />
+                        <span className="font-bold text-black mr-0.5">Address:</span>
+                        <span className="truncate max-w-[320px] font-sans">{order.deliveryAddress || 'No address specified'}</span>
+                      </span>
+
+                      {order.fbMessengerLink ? (
+                        <a
+                          href={order.fbMessengerLink.startsWith('http') ? order.fbMessengerLink : `https://${order.fbMessengerLink}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          onClick={(e) => e.stopPropagation()}
+                          className="inline-flex items-center gap-1 bg-blue-50 border border-blue-200 hover:bg-blue-100 text-blue-700 px-2.5 py-1 rounded-md text-xs font-bold transition-colors cursor-pointer"
+                        >
+                          <MessageCircle className="w-3.5 h-3.5 text-blue-600 shrink-0" />
+                          <span>FB Messenger</span>
+                          <ExternalLink className="w-3 h-3 text-blue-500" />
+                        </a>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 bg-gray-50 border border-gray-200 px-2 py-1 rounded-md text-xs text-gray-400 font-mono">
+                          FB Messenger: Not provided
+                        </span>
+                      )}
+
+                      {order.notes && (
+                        <span className="inline-flex items-center gap-1 bg-amber-50 border border-amber-200 px-2.5 py-1 rounded-md text-xs text-amber-950 font-medium">
+                          <span className="font-mono text-[10px] font-bold text-amber-800 uppercase mr-0.5">Notes:</span>
+                          <span className="italic max-w-[300px] truncate">"{order.notes}"</span>
+                        </span>
+                      )}
                     </div>
                   </div>
 
@@ -333,26 +421,6 @@ export default function OrderHistory({
                       </div>
                     </div>
 
-                    {order.status === 'Pending Approval' && onUpdateOrderStatus && (
-                      <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 font-sans">
-                        <div className="space-y-0.5">
-                          <span className="font-extrabold text-xs text-amber-900 uppercase block">
-                            ⏳ Portal Request Pending Company Review
-                          </span>
-                          <p className="text-xs text-amber-800">
-                            This order was submitted via portal link. Review items and submit to admin for official ordering.
-                          </p>
-                        </div>
-                        <button
-                          onClick={() => onUpdateOrderStatus(order.id, 'Pending')}
-                          className="bg-black text-white hover:bg-neutral-800 font-extrabold text-xs uppercase px-4 py-2.5 rounded-lg border border-black shadow-xs flex items-center gap-2 cursor-pointer shrink-0"
-                          id={`history-submit-admin-${order.id}`}
-                        >
-                          <span>Submit Order to Admin</span>
-                          <ArrowRight className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-                    )}
 
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2 text-xs text-gray-600">
                       <div>

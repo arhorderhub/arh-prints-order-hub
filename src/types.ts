@@ -209,6 +209,19 @@ export interface OrderPortal {
   customVariantPrices?: Record<string, Record<string, number>>; // Map of productId -> (variantKey -> custom price)
 }
 
+export interface AppNotification {
+  id: string;
+  recipientType: 'admin' | 'company';
+  companyName?: string;
+  title: string;
+  message: string;
+  timestamp: string;
+  read: boolean;
+  orderId?: string;
+  orderNumber?: string;
+  type: 'new_storefront_order' | 'order_status_change' | 'new_company_order' | 'quote_request' | 'quote_status_change';
+}
+
 export function getDisplayPurchaserName(
   order: {
     contactPerson?: string;
@@ -232,13 +245,13 @@ export function getDisplayPurchaserName(
   };
 
   const rawPerson = order?.contactPerson?.trim();
-  if (rawPerson && !isGeneric(rawPerson) && !rawPerson.includes('@')) {
+  if (rawPerson && !isGeneric(rawPerson)) {
     return rawPerson;
   }
 
   if (Array.isArray(order?.items)) {
     const itemSubmitter = order.items.find(
-      i => i?.submitterName && !isGeneric(i.submitterName) && !i.submitterName.includes('@')
+      i => i?.submitterName && !isGeneric(i.submitterName)
     )?.submitterName?.trim();
     if (itemSubmitter) {
       return itemSubmitter;
@@ -246,21 +259,19 @@ export function getDisplayPurchaserName(
   }
 
   const companyContact = fallbackCompanyContact?.trim();
-  if (companyContact && !isGeneric(companyContact) && !companyContact.includes('@')) {
+  if (companyContact && !isGeneric(companyContact)) {
     return companyContact;
   }
 
-  const emailCandidate = (rawPerson && rawPerson.includes('@')) ? rawPerson : order?.contactEmail?.trim();
-  if (emailCandidate && emailCandidate.includes('@')) {
-    const handle = emailCandidate.split('@')[0].trim();
-    if (handle) {
-      const formatted = handle
-        .replace(/[._\-+]/g, ' ')
-        .split(' ')
-        .filter(Boolean)
-        .map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
-        .join(' ');
-      if (formatted) return formatted;
+  if (rawPerson && rawPerson.length > 0 && rawPerson.toLowerCase() !== 'n/a') {
+    return rawPerson;
+  }
+
+  if (order?.contactEmail && order.contactEmail.includes('@')) {
+    const parts = order.contactEmail.split('@')[0].trim();
+    if (parts && parts.length > 0) {
+      const formatted = parts.charAt(0).toUpperCase() + parts.slice(1);
+      return formatted;
     }
   }
 

@@ -5,7 +5,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Product, CompanyProfile, Order, CartItem, AppsScriptConfig, SystemSettings, CatalogProduct, QuoteEnquiry, OrderPortal, getDisplayPurchaserName } from './types';
+import { Product, CompanyProfile, Order, CartItem, AppsScriptConfig, SystemSettings, CatalogProduct, QuoteEnquiry, OrderPortal, AppNotification, getDisplayPurchaserName } from './types';
 import { INITIAL_PRODUCTS, INITIAL_COMPANIES, INITIAL_ORDERS, INITIAL_PORTALS } from './data/mockData';
 import { INITIAL_CATALOG_PRODUCTS, INITIAL_QUOTE_ENQUIRIES, sanitizeCatalogProduct } from './data/initialCatalog';
 import { DEFAULT_QUOTE_NOTES } from './constants/quoteDefaults';
@@ -266,6 +266,124 @@ export default function App() {
     return cached ? JSON.parse(cached) : INITIAL_PORTALS;
   });
 
+  const [notifications, setNotifications] = useState<AppNotification[]>(() => {
+    const cached = localStorage.getItem('rp_notifications');
+    if (cached) {
+      try {
+        return JSON.parse(cached);
+      } catch {
+        return [];
+      }
+    }
+    return [
+      {
+        id: 'notif-init-1',
+        recipientType: 'company',
+        companyName: 'Print Room',
+        title: 'New Storefront Order',
+        message: 'New storefront order ARH-2026-1023 placed via AS Colour Products Portal.',
+        timestamp: new Date().toISOString(),
+        read: false,
+        orderNumber: 'ARH-2026-1023',
+        type: 'new_storefront_order'
+      },
+      {
+        id: 'notif-init-2',
+        recipientType: 'admin',
+        title: 'New Company Order',
+        message: 'New order ARH-2026-1010-BATCH placed by Print Room.',
+        timestamp: new Date(Date.now() - 3600000).toISOString(),
+        read: false,
+        orderNumber: 'ARH-2026-1010-BATCH',
+        type: 'new_company_order'
+      }
+    ];
+  });
+
+  useEffect(() => {
+    localStorage.setItem('rp_notifications', JSON.stringify(notifications));
+  }, [notifications]);
+
+  const handleMarkNotificationAsRead = (id: string) => {
+    setNotifications(prev => prev.map(n => n.id === id ? { ...n, read: true } : n));
+    if (appsScriptConfig.isConnected && appsScriptConfig.webAppUrl) {
+      sheetsService.markNotificationRead(appsScriptConfig.webAppUrl, id);
+    }
+  };
+
+  const handleMarkAllNotificationsAsRead = () => {
+    const isTarget = (n: AppNotification) => {
+      if (loggedInUser?.role === 'admin') {
+        return n.recipientType === 'admin';
+      } else {
+        const activeCoLower = activeCompany?.name?.trim().toLowerCase();
+        return n.recipientType === 'company' && !!n.companyName && n.companyName.trim().toLowerCase() === activeCoLower;
+      }
+    };
+
+    setNotifications(prev => prev.map(n => isTarget(n) ? { ...n, read: true } : n));
+    if (appsScriptConfig.isConnected && appsScriptConfig.webAppUrl) {
+      notifications.filter(n => isTarget(n) && !n.read).forEach(n => {
+        sheetsService.markNotificationRead(appsScriptConfig.webAppUrl!, n.id);
+      });
+    }
+  };
+
+  const handleClearNotifications = () => {
+    const isTarget = (n: AppNotification) => {
+      if (loggedInUser?.role === 'admin') {
+        return n.recipientType === 'admin';
+      } else {
+        const activeCoLower = activeCompany?.name?.trim().toLowerCase();
+        return n.recipientType === 'company' && !!n.companyName && n.companyName.trim().toLowerCase() === activeCoLower;
+      }
+    };
+
+    setNotifications(prev => prev.filter(n => !isTarget(n)));
+  };
+
+  const [highlightOrderId, setHighlightOrderId] = useState<string | undefined>(undefined);
+  const [highlightOrderNumber, setHighlightOrderNumber] = useState<string | undefined>(undefined);
+  const [highlightQuoteId, setHighlightQuoteId] = useState<string | undefined>(undefined);
+  const [highlightEnquiryNumber, setHighlightEnquiryNumber] = useState<string | undefined>(undefined);
+  const [adminCatalogSection, setAdminCatalogSection] = useState<'catalog' | 'enquiries' | undefined>(undefined);
+
+  const handleSelectNotification = (notif: AppNotification) => {
+    const isQuoteNotif =
+      notif.type === 'quote_request' ||
+      notif.type === 'quote_status_change' ||
+      notif.title.toLowerCase().includes('quote') ||
+      notif.message.toLowerCase().includes('quote');
+
+    if (loggedInUser?.role === 'admin') {
+      setActiveTab('admin');
+      if (isQuoteNotif) {
+        setAdminCatalogSection('enquiries');
+        setHighlightEnquiryNumber(notif.orderNumber || notif.orderId);
+      } else {
+        setAdminCatalogSection(undefined);
+        setHighlightOrderNumber(notif.orderNumber);
+        setHighlightOrderId(notif.orderId);
+      }
+    } else {
+      if (notif.companyName && notif.companyName.toLowerCase().trim() !== activeCompany?.name.toLowerCase().trim()) {
+        const targetCo = companies.find(c => c.name.toLowerCase().trim() === notif.companyName?.toLowerCase().trim());
+        if (targetCo) {
+          setSelectedCompanyId(targetCo.id);
+        }
+      }
+      if (isQuoteNotif) {
+        setActiveTab('quote-history');
+        setHighlightQuoteId(notif.orderId);
+        setHighlightEnquiryNumber(notif.orderNumber);
+      } else {
+        setActiveTab('history');
+        setHighlightOrderId(notif.orderId);
+        setHighlightOrderNumber(notif.orderNumber);
+      }
+    }
+  };
+
   const [activePublicPortal, setActivePublicPortal] = useState<OrderPortal | null>(null);
   const [urlPortalToken, setUrlPortalToken] = useState<string | null>(() => {
     const params = new URLSearchParams(window.location.search);
@@ -493,8 +611,14 @@ export default function App() {
         customVariantPrices: urlCustomVariantPrices || match.customVariantPrices
       };
       setActivePublicPortal(mergedMatch);
-      setIsResolvingPortal(false);
-      // If NOT connected to Sheets, we are done. If connected, we fetch live Sheets data in background silently without blocking the UI!
+      // Only unblock loading state immediately if offline or if we have an exact cached local portal
+      const isRealLocalPortal = orderPortals.some(p => p.id === match.id || (p.shareToken && p.shareToken.toLowerCase() === tokenClean.toLowerCase()));
+      if (!appsScriptConfig.isConnected || !appsScriptConfig.webAppUrl || isRealLocalPortal) {
+        setIsResolvingPortal(false);
+      } else {
+        setIsResolvingPortal(true);
+      }
+      // If NOT connected to Sheets, we are done.
       if (!appsScriptConfig.isConnected || !appsScriptConfig.webAppUrl) {
         return;
       }
@@ -662,6 +786,7 @@ export default function App() {
   }, [appsScriptConfig]);
 
   const [isSyncingSheets, setIsSyncingSheets] = useState(false);
+  const [hasInitialSynced, setHasInitialSynced] = useState(false);
   const [lastSyncedTime, setLastSyncedTime] = useState<string | null>(null);
   const isSyncingRef = React.useRef(false);
 
@@ -685,6 +810,7 @@ export default function App() {
         let fetchedQuotes = allData?.quoteEnquiries ?? null;
         let fetchedCatalogProducts = allData?.catalogProducts ?? null;
         let fetchedPortals = allData?.portals ?? null;
+        let fetchedNotifications = allData?.notifications ?? null;
 
         // Fallback to parallel fetches if bulk endpoint was not available or empty
         if (!allData) {
@@ -695,7 +821,8 @@ export default function App() {
             fetchedSettings,
             fetchedQuotes,
             fetchedCatalogProducts,
-            fetchedPortals
+            fetchedPortals,
+            fetchedNotifications
           ] = await Promise.all([
             sheetsService.fetchProducts(url).catch(() => null),
             sheetsService.fetchCompanies(url).catch(() => null),
@@ -703,7 +830,8 @@ export default function App() {
             sheetsService.fetchAdminSettings(url).catch(() => null),
             sheetsService.fetchQuoteEnquiries(url).catch(() => null),
             sheetsService.fetchCatalogProducts(url).catch(() => null),
-            sheetsService.fetchPortals(url).catch(() => null)
+            sheetsService.fetchPortals(url).catch(() => null),
+            sheetsService.fetchNotifications(url).catch(() => null)
           ]);
         }
 
@@ -762,12 +890,29 @@ export default function App() {
 
             const localMap = new Map<string, Order>(prevOrders.map(o => [o.id, o]));
             const mergedFetched = fetchedOrders.map(fo => {
-              const local = localMap.get(fo.id);
+              const local = localMap.get(fo.id) || prevOrders.find(o => o.orderNumber && fo.orderNumber && o.orderNumber.trim() === fo.orderNumber.trim());
               if (local) {
-                // If order was approved or updated locally, do not revert it to 'Pending Approval' if Google Sheets returns stale status
+                let status = fo.status;
                 if (local.status !== 'Pending Approval' && (fo.status === 'Pending Approval' || fo.status === 'Pending')) {
-                  return { ...fo, status: local.status };
+                  status = local.status;
                 }
+
+                const isGenericPerson = (p?: string) => !p || !p.trim() || p.trim().toLowerCase() === 'storefront customer' || p.trim().toLowerCase() === 'n/a';
+                const isGenericAddress = (a?: string) => !a || !a.trim() || a.trim().toLowerCase() === 'no address specified' || a.trim().toLowerCase() === 'n/a';
+                const isGenericNotes = (n?: string) => !n || !n.trim() || n.trim().toLowerCase() === 'none provided';
+                const isGenericMessenger = (m?: string) => !m || !m.trim() || m.trim().toLowerCase() === 'not provided' || m.trim().toLowerCase() === 'fb messenger: not provided';
+
+                return {
+                  ...fo,
+                  status,
+                  contactPerson: !isGenericPerson(fo.contactPerson) ? fo.contactPerson : (local.contactPerson || fo.contactPerson || ''),
+                  contactNumber: (fo.contactNumber && fo.contactNumber.trim() !== '') ? fo.contactNumber : (local.contactNumber || ''),
+                  fbMessengerLink: !isGenericMessenger(fo.fbMessengerLink) ? fo.fbMessengerLink : (local.fbMessengerLink || fo.fbMessengerLink || ''),
+                  deliveryAddress: !isGenericAddress(fo.deliveryAddress) ? fo.deliveryAddress : (local.deliveryAddress || fo.deliveryAddress || ''),
+                  poNumber: (fo.poNumber && fo.poNumber.trim() !== '') ? fo.poNumber : (local.poNumber || ''),
+                  notes: !isGenericNotes(fo.notes) ? fo.notes : (local.notes || fo.notes || ''),
+                  contactEmail: (fo.contactEmail && fo.contactEmail.trim() !== '') ? fo.contactEmail : (local.contactEmail || '')
+                };
               }
               return fo;
             });
@@ -835,13 +980,38 @@ export default function App() {
           });
         }
 
+        // 8. Process notifications
+        if (fetchedNotifications !== null && Array.isArray(fetchedNotifications)) {
+          setNotifications(prevNotifs => {
+            const notifMap = new Map<string, AppNotification>();
+            fetchedNotifications.forEach(n => notifMap.set(n.id, n));
+            prevNotifs.forEach(n => {
+              const existing = notifMap.get(n.id);
+              if (existing) {
+                notifMap.set(n.id, {
+                  ...existing,
+                  read: n.read || existing.read
+                });
+              } else {
+                notifMap.set(n.id, n);
+              }
+            });
+            return Array.from(notifMap.values()).sort(
+              (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+            );
+          });
+        }
+
         setLastSyncedTime(new Date().toLocaleTimeString());
       } catch (err) {
         console.warn('Google Sheets sync notice:', err);
       } finally {
         setIsSyncingSheets(false);
         isSyncingRef.current = false;
+        setHasInitialSynced(true);
       }
+    } else {
+      setHasInitialSynced(true);
     }
   };
 
@@ -1000,6 +1170,33 @@ export default function App() {
   };
 
   const handleUpdateOrders = async (newOrders: Order[]) => {
+    // Detect order status changes and generate notifications for company
+    const statusNotifs: AppNotification[] = [];
+    for (const newOrd of newOrders) {
+      const oldOrd = orders.find(o => o.id === newOrd.id);
+      if (oldOrd && oldOrd.status !== newOrd.status) {
+        statusNotifs.push({
+          id: `notif-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+          recipientType: 'company',
+          companyName: newOrd.companyName,
+          title: 'Order Status Changed',
+          message: `Order ${newOrd.orderNumber} status changed from "${oldOrd.status}" to "${newOrd.status}".`,
+          timestamp: new Date().toISOString(),
+          read: false,
+          orderId: newOrd.id,
+          orderNumber: newOrd.orderNumber,
+          type: 'order_status_change'
+        });
+      }
+    }
+
+    if (statusNotifs.length > 0) {
+      setNotifications(prev => [...statusNotifs, ...prev]);
+      if (appsScriptConfig.isConnected && appsScriptConfig.webAppUrl) {
+        sheetsService.saveNotifications(appsScriptConfig.webAppUrl, statusNotifs).catch(err => console.warn('Save notification notice:', err));
+      }
+    }
+
     // 1. Update React state immediately for instant feedback and localStorage persistence
     setOrders(newOrders);
 
@@ -1233,20 +1430,114 @@ export default function App() {
 
   // Quote Enquiry Handlers
   const handleAddQuoteEnquiry = (enquiry: QuoteEnquiry) => {
+    const adminNotif: AppNotification = {
+      id: `notif-quote-admin-${Date.now()}`,
+      recipientType: 'admin',
+      companyName: enquiry.companyName,
+      title: 'New Quote Request',
+      message: `New quote request ${enquiry.enquiryNumber || enquiry.id} submitted by ${enquiry.companyName} for "${enquiry.productName}" (Qty: ${enquiry.quantity}).`,
+      timestamp: new Date().toISOString(),
+      read: false,
+      orderId: enquiry.id,
+      orderNumber: enquiry.enquiryNumber,
+      type: 'quote_request'
+    };
+
+    const companyNotif: AppNotification = {
+      id: `notif-quote-co-${Date.now()}`,
+      recipientType: 'company',
+      companyName: enquiry.companyName,
+      title: 'Quote Request Submitted',
+      message: `Your quote request ${enquiry.enquiryNumber || enquiry.id} for "${enquiry.productName}" was received and is under review.`,
+      timestamp: new Date().toISOString(),
+      read: false,
+      orderId: enquiry.id,
+      orderNumber: enquiry.enquiryNumber,
+      type: 'quote_request'
+    };
+
+    setNotifications(prev => [companyNotif, adminNotif, ...prev]);
     setQuoteEnquiries(prev => [enquiry, ...prev]);
+
     if (appsScriptConfig.isConnected && appsScriptConfig.webAppUrl) {
       sheetsService.saveQuoteEnquiry(appsScriptConfig.webAppUrl, enquiry);
+      sheetsService.saveNotifications(appsScriptConfig.webAppUrl, [companyNotif, adminNotif]).catch(err => console.warn('Save quote notifications notice:', err));
     }
   };
 
   const handleSaveQuoteEnquiry = (enquiry: QuoteEnquiry) => {
+    const companyNotif: AppNotification = {
+      id: `notif-quote-save-co-${Date.now()}`,
+      recipientType: 'company',
+      companyName: enquiry.companyName,
+      title: `Quote Request ${enquiry.enquiryNumber || enquiry.id} Updated`,
+      message: `Quote request ${enquiry.enquiryNumber || enquiry.id} ("${enquiry.productName}") status is now "${enquiry.status}".${enquiry.quotedTotalPrice ? ` Total Quoted: $${enquiry.quotedTotalPrice.toFixed(2)}` : ''}`,
+      timestamp: new Date().toISOString(),
+      read: false,
+      orderId: enquiry.id,
+      orderNumber: enquiry.enquiryNumber,
+      type: 'quote_status_change'
+    };
+
+    const adminNotif: AppNotification = {
+      id: `notif-quote-save-admin-${Date.now()}`,
+      recipientType: 'admin',
+      companyName: enquiry.companyName,
+      title: `Quote Request ${enquiry.enquiryNumber || enquiry.id} Updated`,
+      message: `Quote request ${enquiry.enquiryNumber || enquiry.id} (${enquiry.companyName}) updated to "${enquiry.status}".`,
+      timestamp: new Date().toISOString(),
+      read: false,
+      orderId: enquiry.id,
+      orderNumber: enquiry.enquiryNumber,
+      type: 'quote_status_change'
+    };
+
+    setNotifications(prev => [companyNotif, adminNotif, ...prev]);
     setQuoteEnquiries(prev => prev.map(q => q.id === enquiry.id ? enquiry : q));
+
     if (appsScriptConfig.isConnected && appsScriptConfig.webAppUrl) {
       sheetsService.saveQuoteEnquiry(appsScriptConfig.webAppUrl, enquiry);
+      sheetsService.saveNotifications(appsScriptConfig.webAppUrl, [companyNotif, adminNotif]).catch(err => console.warn('Save quote notifications notice:', err));
     }
   };
 
   const handleUpdateQuoteEnquiryStatus = (enquiryId: string, status: QuoteEnquiry['status']) => {
+    const targetEnquiry = quoteEnquiries.find(q => q.id === enquiryId);
+
+    if (targetEnquiry) {
+      const companyNotif: AppNotification = {
+        id: `notif-quote-status-co-${Date.now()}`,
+        recipientType: 'company',
+        companyName: targetEnquiry.companyName,
+        title: `Quote ${targetEnquiry.enquiryNumber || targetEnquiry.id} Status Updated`,
+        message: `Quote request ${targetEnquiry.enquiryNumber || targetEnquiry.id} ("${targetEnquiry.productName}") status changed to "${status}".`,
+        timestamp: new Date().toISOString(),
+        read: false,
+        orderId: targetEnquiry.id,
+        orderNumber: targetEnquiry.enquiryNumber,
+        type: 'quote_status_change'
+      };
+
+      const adminNotif: AppNotification = {
+        id: `notif-quote-status-admin-${Date.now()}`,
+        recipientType: 'admin',
+        companyName: targetEnquiry.companyName,
+        title: `Quote Status Updated`,
+        message: `Quote request ${targetEnquiry.enquiryNumber || targetEnquiry.id} (${targetEnquiry.companyName}) status updated to "${status}".`,
+        timestamp: new Date().toISOString(),
+        read: false,
+        orderId: targetEnquiry.id,
+        orderNumber: targetEnquiry.enquiryNumber,
+        type: 'quote_status_change'
+      };
+
+      setNotifications(prev => [companyNotif, adminNotif, ...prev]);
+
+      if (appsScriptConfig.isConnected && appsScriptConfig.webAppUrl) {
+        sheetsService.saveNotifications(appsScriptConfig.webAppUrl, [companyNotif, adminNotif]).catch(err => console.warn('Save quote status notifications notice:', err));
+      }
+    }
+
     setQuoteEnquiries(prev => prev.map(q => q.id === enquiryId ? { ...q, status } : q));
     if (appsScriptConfig.isConnected && appsScriptConfig.webAppUrl) {
       sheetsService.updateQuoteEnquiryStatus(appsScriptConfig.webAppUrl, enquiryId, status);
@@ -1402,6 +1693,8 @@ export default function App() {
     deliveryAddress: string;
     contactPerson: string;
     contactEmail: string;
+    contactNumber?: string;
+    fbMessengerLink?: string;
     shippingCost?: number;
   }, checkedItems?: CartItem[]) => {
     setIsSubmitting(true);
@@ -1437,6 +1730,8 @@ export default function App() {
       companyName: activeCompany.name,
       contactEmail: formData.contactEmail,
       contactPerson: formData.contactPerson,
+      contactNumber: formData.contactNumber,
+      fbMessengerLink: formData.fbMessengerLink,
       deliveryAddress: formData.deliveryAddress,
       poNumber: formData.poNumber || undefined,
       notes: formData.notes || undefined,
@@ -1448,6 +1743,23 @@ export default function App() {
 
     if (appsScriptConfig.isConnected && appsScriptConfig.webAppUrl) {
       await sheetsService.saveOrder(appsScriptConfig.webAppUrl, newOrder);
+    }
+
+    // Generate Admin Notification for new company order
+    const adminNotif: AppNotification = {
+      id: `notif-${Date.now()}-admin`,
+      recipientType: 'admin',
+      title: 'New Company Order',
+      message: `New order ${orderNo} placed by ${activeCompany.name} (${systemSettings.currencySymbol || 'Php'} ${finalAmount.toFixed(2)}).`,
+      timestamp: new Date().toISOString(),
+      read: false,
+      orderId: newOrder.id,
+      orderNumber: orderNo,
+      type: 'new_company_order'
+    };
+    setNotifications(prev => [adminNotif, ...prev]);
+    if (appsScriptConfig.isConnected && appsScriptConfig.webAppUrl) {
+      sheetsService.saveNotification(appsScriptConfig.webAppUrl, adminNotif).catch(err => console.warn('Save admin notification notice:', err));
     }
 
     setOrders(prev => [newOrder, ...prev]);
@@ -1561,6 +1873,37 @@ export default function App() {
 
     if (appsScriptConfig.isConnected && appsScriptConfig.webAppUrl) {
       await sheetsService.saveOrder(appsScriptConfig.webAppUrl, newOrder);
+    }
+
+    // Generate Company and Admin notifications for Storefront order
+    const companyNotif: AppNotification = {
+      id: `notif-${Date.now()}-comp`,
+      recipientType: 'company',
+      companyName: portalCompany.name,
+      title: 'New Storefront Order',
+      message: `New storefront order ${orderNo} placed via ${activePublicPortal.name} by ${orderData.contactPerson || 'Customer'}.`,
+      timestamp: new Date().toISOString(),
+      read: false,
+      orderId: newOrder.id,
+      orderNumber: orderNo,
+      type: 'new_storefront_order'
+    };
+
+    const adminNotif: AppNotification = {
+      id: `notif-${Date.now()}-admin`,
+      recipientType: 'admin',
+      title: 'New Storefront Order',
+      message: `New portal order ${orderNo} submitted for ${portalCompany.name}.`,
+      timestamp: new Date().toISOString(),
+      read: false,
+      orderId: newOrder.id,
+      orderNumber: orderNo,
+      type: 'new_storefront_order'
+    };
+
+    setNotifications(prev => [companyNotif, adminNotif, ...prev]);
+    if (appsScriptConfig.isConnected && appsScriptConfig.webAppUrl) {
+      sheetsService.saveNotifications(appsScriptConfig.webAppUrl, [companyNotif, adminNotif]).catch(err => console.warn('Save storefront notifications notice:', err));
     }
 
     setOrders(prev => [newOrder, ...prev]);
@@ -1690,21 +2033,15 @@ export default function App() {
     const allProductsArray = Array.from(productMap.values());
 
     let companyAvailableProducts: Product[] = [];
+    const companyProducts = getCompanyProducts(portalCompany, allProductsArray);
 
     if (activePublicPortal.productIds && activePublicPortal.productIds.length > 0) {
       const portalSet = new Set(activePublicPortal.productIds.map(id => String(id).trim()));
-      companyAvailableProducts = allProductsArray.filter(p => portalSet.has(String(p.id).trim()));
-
-      if (companyAvailableProducts.length === 0) {
-        companyAvailableProducts = getCompanyProducts(portalCompany, allProductsArray);
-      }
+      const filtered = companyProducts.filter(p => portalSet.has(String(p.id).trim()));
+      // Use filtered if it matched any products, otherwise use companyProducts
+      companyAvailableProducts = filtered.length > 0 ? filtered : companyProducts;
     } else {
-      companyAvailableProducts = getCompanyProducts(portalCompany, allProductsArray);
-    }
-
-    // Safety fallback: If still 0 products, show all available products
-    if (companyAvailableProducts.length === 0 && allProductsArray.length > 0) {
-      companyAvailableProducts = allProductsArray;
+      companyAvailableProducts = companyProducts;
     }
 
     return (
@@ -1846,6 +2183,14 @@ export default function App() {
 
   // If no user is authenticated, serve the portal gate screen
   if (!loggedInUser) {
+    if (!hasInitialSynced && isSyncingSheets) {
+      return (
+        <div className="min-h-screen bg-gray-50 flex flex-col items-center justify-center p-4">
+          <div className="w-10 h-10 border-4 border-gray-200 border-t-black rounded-full animate-spin" />
+        </div>
+      );
+    }
+
     return (
       <>
         <style dangerouslySetInnerHTML={{ __html: getThemeStyles(systemSettings.colorTheme || 'classic_noir') }} />
@@ -1879,6 +2224,11 @@ export default function App() {
         isSheetsConnected={appsScriptConfig.isConnected}
         isSyncingSheets={isSyncingSheets}
         onSyncSheets={syncWithSheets}
+        notifications={notifications}
+        onMarkNotificationAsRead={handleMarkNotificationAsRead}
+        onMarkAllNotificationsAsRead={handleMarkAllNotificationsAsRead}
+        onClearNotifications={handleClearNotifications}
+        onSelectNotification={handleSelectNotification}
       />
 
       {/* Main App Workspace Stage */}
@@ -1921,7 +2271,9 @@ export default function App() {
                 onForceSyncAll={handleForceSyncAll}
                 onPullFromSheets={syncWithSheets}
                 isSyncingSheets={isSyncingSheets}
-                initialTab={activeTab === 'sync' ? 'sync' : undefined}
+                initialTab={activeTab === 'sync' ? 'sync' : (adminCatalogSection ? 'catalog' : undefined)}
+                initialCatalogSection={adminCatalogSection}
+                highlightEnquiryNumber={highlightEnquiryNumber}
               />
             )}
 
@@ -1967,6 +2319,8 @@ export default function App() {
                 onReorderPastOrder={handleReorderPastOrder}
                 onUpdateOrderStatus={(orderId, status) => handleUpdateOrders(orders.map(o => o.id === orderId ? { ...o, status } : o))}
                 appsScriptUrl={appsScriptConfig.isConnected ? appsScriptConfig.webAppUrl : undefined}
+                highlightOrderId={highlightOrderId}
+                highlightOrderNumber={highlightOrderNumber}
               />
             )}
 
@@ -1975,6 +2329,8 @@ export default function App() {
                 quoteEnquiries={quoteEnquiries}
                 activeCompany={activeCompany}
                 onSaveQuoteEnquiry={handleSaveQuoteEnquiry}
+                highlightQuoteId={highlightQuoteId}
+                highlightEnquiryNumber={highlightEnquiryNumber}
               />
             )}
 

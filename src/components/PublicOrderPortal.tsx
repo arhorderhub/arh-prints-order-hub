@@ -3,8 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
-import { OrderPortal, Product, CompanyProfile, Order, OrderItem, SystemSettings } from '../types';
+import React, { useState, useMemo } from 'react';
+import { OrderPortal, Product, CompanyProfile, Order, OrderItem, SystemSettings, getDisplayPurchaserName } from '../types';
 import { getProductUnitPrice } from '../utils/pricing';
 import { getItemColorImage } from '../utils/colorUtils';
 import ProductImageCarousel from './ProductImageCarousel';
@@ -25,7 +25,8 @@ import {
   Building,
   Info,
   Check,
-  AlertCircle
+  AlertCircle,
+  ExternalLink
 } from 'lucide-react';
 
 interface PublicOrderPortalProps {
@@ -62,12 +63,47 @@ export default function PublicOrderPortal({
   onClosePublicView,
   isLoggedIn = false
 }: PublicOrderPortalProps) {
-  // Filter products included in this portal; fallback to all provided products if portal.productIds is empty or matches none
-  const portalProductIdsSet = new Set((portal.productIds || []).map(id => String(id).trim()));
-  const matchedPortalProducts = (portalProductIdsSet.size > 0)
-    ? products.filter(p => portalProductIdsSet.has(String(p.id).trim()))
-    : products;
-  const portalProducts = matchedPortalProducts.length > 0 ? matchedPortalProducts : products;
+  // Filter products strictly assigned to this portal / company profile
+  const portalProducts = useMemo(() => {
+    const hasExplicitCompanyList = Array.isArray(company?.enabledProductIds);
+    const cSet = new Set((company?.enabledProductIds || []).map(id => String(id).trim()));
+
+    const hasExplicitPortalList = Array.isArray(portal.productIds) && portal.productIds.length > 0;
+    const pSet = new Set((portal.productIds || []).map(id => String(id).trim()));
+
+    const customProducts = (company && Array.isArray(company.customProducts)) ? company.customProducts : [];
+
+    const matched: Product[] = [];
+
+    // Filter products provided from props
+    products.forEach(p => {
+      const pid = String(p.id).trim();
+      // If company has explicit approved catalog list, product MUST be checked (in cSet)
+      if (hasExplicitCompanyList && !cSet.has(pid)) {
+        return;
+      }
+      // If portal has explicit product list, product MUST be in pSet
+      if (hasExplicitPortalList && !pSet.has(pid)) {
+        return;
+      }
+      matched.push(p);
+    });
+
+    // Custom products for this company
+    if (customProducts.length > 0) {
+      const existingIds = new Set(matched.map(m => m.id));
+      customProducts.forEach(cp => {
+        if (cp && cp.id && !existingIds.has(cp.id)) {
+          const cpid = String(cp.id).trim();
+          if (!hasExplicitPortalList || pSet.has(cpid)) {
+            matched.push(cp);
+          }
+        }
+      });
+    }
+
+    return matched;
+  }, [portal.productIds, company?.enabledProductIds, company?.customProducts, products]);
 
   // Storefront Order Cart State
   const [cartItems, setCartItems] = useState<{
@@ -183,7 +219,7 @@ export default function PublicOrderPortal({
         contactEmail: shopperEmail.trim(),
         deliveryAddress: deliveryDept.trim(),
         poNumber: poNumber.trim() || undefined,
-        notes: `[Order Portal: ${portal.name}] ${orderNotes.trim()}`.trim(),
+        notes: orderNotes.trim() || undefined,
         items: cartItems.map(item => ({
           product: item.product,
           quantity: item.quantity,
@@ -253,26 +289,54 @@ export default function PublicOrderPortal({
           </div>
 
           {/* Details Grid */}
-          <div className="bg-gray-50 border border-gray-200 rounded-2xl p-5 space-y-4 text-xs font-mono">
+          <div className="bg-gray-50 border border-gray-200 rounded-2xl p-5 space-y-3 text-xs font-mono">
             <div className="flex justify-between border-b border-gray-200 pb-2">
               <span className="text-gray-500">Order Reference #:</span>
               <span className="font-extrabold text-black">{submittedOrder.orderNumber}</span>
             </div>
             <div className="flex justify-between border-b border-gray-200 pb-2">
-              <span className="text-gray-500">Shopper Name:</span>
-              <span className="font-bold text-black">{submittedOrder.contactPerson}</span>
+              <span className="text-gray-500">Customer / Shopper Name:</span>
+              <span className="font-bold text-black">{getDisplayPurchaserName(submittedOrder)}</span>
             </div>
             <div className="flex justify-between border-b border-gray-200 pb-2">
               <span className="text-gray-500">Email:</span>
-              <span className="font-bold text-black">{submittedOrder.contactEmail}</span>
+              <span className="font-bold text-black">{submittedOrder.contactEmail || 'N/A'}</span>
             </div>
+            {submittedOrder.contactNumber && (
+              <div className="flex justify-between border-b border-gray-200 pb-2">
+                <span className="text-gray-500">Phone:</span>
+                <span className="font-bold text-black">{submittedOrder.contactNumber}</span>
+              </div>
+            )}
+            {submittedOrder.fbMessengerLink && (
+              <div className="flex justify-between border-b border-gray-200 pb-2 items-center">
+                <span className="text-gray-500">FB Messenger:</span>
+                <a
+                  href={submittedOrder.fbMessengerLink.startsWith('http') ? submittedOrder.fbMessengerLink : `https://${submittedOrder.fbMessengerLink}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-blue-600 font-bold hover:underline inline-flex items-center gap-1"
+                >
+                  <span>💬 Profile Link</span>
+                  <ExternalLink className="w-3 h-3" />
+                </a>
+              </div>
+            )}
             <div className="flex justify-between border-b border-gray-200 pb-2">
               <span className="text-gray-500">Address / Dept:</span>
-              <span className="font-bold text-black">{submittedOrder.deliveryAddress}</span>
+              <span className="font-bold text-black">{submittedOrder.deliveryAddress || 'No address specified'}</span>
             </div>
-            <div className="flex justify-between">
+            {submittedOrder.notes && (
+              <div className="border-b border-gray-200 pb-2">
+                <span className="text-gray-500 block mb-0.5">Notes / Special Instructions:</span>
+                <span className="font-sans italic text-gray-800 bg-white p-2 rounded border border-gray-200 block text-[11px]">
+                  "{submittedOrder.notes}"
+                </span>
+              </div>
+            )}
+            <div className="flex justify-between pt-1">
               <span className="text-gray-500">Total Order Value:</span>
-              <span className="font-extrabold text-black">
+              <span className="font-extrabold text-black text-sm">
                 {systemSettings.currencySymbol || 'Php'} {submittedOrder.totalAmount.toFixed(2)}
               </span>
             </div>
@@ -344,7 +408,7 @@ export default function PublicOrderPortal({
             id="back-to-catalog-btn"
           >
             <ArrowLeft className="w-4 h-4" />
-            <span>← Back to Catalog</span>
+            <span>Back to Catalog</span>
           </button>
 
           {/* Header Cart Button Removed as requested */}
@@ -606,10 +670,15 @@ export default function PublicOrderPortal({
 
       {/* Hero Welcome Section */}
       <div className="bg-white border-b border-gray-200 py-6 px-4 sm:px-8">
-        <div className="max-w-6xl mx-auto">
+        <div className="max-w-6xl mx-auto space-y-2">
           <h2 className="text-2xl sm:text-3xl font-black text-black uppercase tracking-tight">
             {portal.name}
           </h2>
+          {portal.description && (
+            <p className="text-sm sm:text-base text-gray-600 font-medium whitespace-pre-line leading-relaxed max-w-3xl pt-1">
+              {portal.description}
+            </p>
+          )}
         </div>
       </div>
 
@@ -886,11 +955,12 @@ export default function PublicOrderPortal({
 
       {/* Order Checkout Modal */}
       {isCheckoutOpen && (
-        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto animate-fade-in">
-          <div className="bg-white border border-gray-200 rounded-3xl max-w-xl w-full p-6 md:p-8 shadow-2xl space-y-6 my-8">
-            <div className="flex items-center justify-between border-b border-gray-100 pb-4">
+        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 animate-fade-in">
+          <div className="bg-white border border-gray-200 rounded-3xl max-w-xl w-full max-h-[92vh] sm:max-h-[88vh] flex flex-col shadow-2xl my-auto overflow-hidden">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between border-b border-gray-100 p-4 sm:p-6 pb-4 shrink-0 bg-white">
               <div>
-                <h3 className="text-lg font-extrabold text-black uppercase tracking-tight">Complete Your Order</h3>
+                <h3 className="text-base sm:text-lg font-extrabold text-black uppercase tracking-tight">Complete Your Order</h3>
                 <p className="text-xs text-gray-500 font-mono">
                   {portal.name} · {company.name}
                 </p>
@@ -903,216 +973,236 @@ export default function PublicOrderPortal({
               </button>
             </div>
 
-            {/* Cart Items Summary */}
-            <div className="space-y-3">
-              <h4 className="text-xs font-mono font-bold uppercase text-gray-400">Order Items ({cartItems.length})</h4>
-              <div className="max-h-48 overflow-y-auto border border-gray-200 rounded-2xl p-3 space-y-2 custom-scrollbar">
-                {cartItems.map(item => (
-                  <div key={item.id} className="p-2.5 bg-gray-50 rounded-xl flex items-center justify-between gap-3 text-xs">
-                    <div className="flex items-center gap-2.5 min-w-0">
-                      {getItemColorImage(item.product, item.selectedColor) ? (
-                        <img
-                          src={getItemColorImage(item.product, item.selectedColor)}
-                          alt={item.product.name}
-                          className="w-8 h-8 rounded-lg object-cover border border-gray-200 shrink-0"
-                          referrerPolicy="no-referrer"
-                        />
-                      ) : (
-                        <div className="w-8 h-8 rounded-lg bg-gray-200 flex items-center justify-center shrink-0 font-mono text-xs">
-                          📦
+            {/* Scrollable Modal Content */}
+            <div className="p-4 sm:p-6 overflow-y-auto space-y-6 flex-1 custom-scrollbar">
+              {/* Cart Items Summary */}
+              <div className="space-y-3">
+                <h4 className="text-xs font-mono font-bold uppercase text-gray-400">Order Items ({cartItems.length})</h4>
+                <div className="max-h-56 overflow-y-auto border border-gray-200 rounded-2xl p-2.5 sm:p-3 space-y-2.5 custom-scrollbar">
+                  {cartItems.map(item => (
+                    <div key={item.id} className="p-3 bg-gray-50 rounded-xl border border-gray-100 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 text-xs">
+                      {/* Product details header row */}
+                      <div className="flex items-start sm:items-center gap-3 min-w-0 flex-1">
+                        {getItemColorImage(item.product, item.selectedColor) ? (
+                          <img
+                            src={getItemColorImage(item.product, item.selectedColor)}
+                            alt={item.product.name}
+                            className="w-10 h-10 rounded-lg object-cover border border-gray-200 shrink-0"
+                            referrerPolicy="no-referrer"
+                          />
+                        ) : (
+                          <div className="w-10 h-10 rounded-lg bg-gray-200 flex items-center justify-center shrink-0 font-mono text-xs">
+                            📦
+                          </div>
+                        )}
+                        <div className="min-w-0 flex-1">
+                          <h5 className="font-bold text-black uppercase leading-snug truncate">{item.product.name}</h5>
+                          <span className="text-[11px] text-gray-500 font-mono block mt-0.5 leading-tight">
+                            {[
+                              item.selectedSize && `Size: ${item.selectedSize}`,
+                              item.selectedColor && `Color: ${item.selectedColor}`
+                            ].filter(Boolean).join(' · ')}
+                          </span>
                         </div>
-                      )}
-                      <div className="min-w-0">
-                        <h5 className="font-bold text-black uppercase truncate">{item.product.name}</h5>
-                        <span className="text-[10px] text-gray-500 font-mono block">
-                          {[
-                            item.selectedSize && `Size: ${item.selectedSize}`,
-                            item.selectedColor && `Color: ${item.selectedColor}`
-                          ].filter(Boolean).join(' · ')}
+
+                        {/* Mobile remove button (top right) */}
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveFromCart(item.id)}
+                          className="text-gray-400 hover:text-red-600 p-1 sm:hidden shrink-0 cursor-pointer self-start"
+                          title="Remove item"
+                        >
+                          <X className="w-4 h-4" />
+                        </button>
+                      </div>
+
+                      {/* Quantity & Price row */}
+                      <div className="flex items-center justify-between sm:justify-end gap-3 shrink-0 pt-2 sm:pt-0 border-t border-gray-200/60 sm:border-t-0">
+                        <div className="flex items-center gap-1.5 bg-white border border-gray-200 rounded-lg p-0.5">
+                          <button
+                            type="button"
+                            onClick={() => handleUpdateCartQty(item.id, item.quantity - 1)}
+                            className="w-6 h-6 rounded bg-gray-100 hover:bg-gray-200 text-black flex items-center justify-center font-mono font-bold text-xs cursor-pointer active:scale-95 transition-all"
+                          >
+                            -
+                          </button>
+                          <span className="font-mono font-bold text-black w-6 text-center text-xs">{item.quantity}</span>
+                          <button
+                            type="button"
+                            onClick={() => handleUpdateCartQty(item.id, item.quantity + 1)}
+                            className="w-6 h-6 rounded bg-gray-100 hover:bg-gray-200 text-black flex items-center justify-center font-mono font-bold text-xs cursor-pointer active:scale-95 transition-all"
+                          >
+                            +
+                          </button>
+                        </div>
+
+                        <span className="font-mono font-bold text-black text-xs min-w-[70px] text-right">
+                          {systemSettings.currencySymbol || 'Php'} {((item.unitPrice ?? getProductUnitPrice(item.product, item.selectedSize, item.selectedColor, portal)) * item.quantity).toFixed(2)}
                         </span>
-                      </div>
-                    </div>
 
-                    <div className="flex items-center gap-3 shrink-0">
-                      <div className="flex items-center gap-1">
+                        {/* Desktop remove button */}
                         <button
-                          onClick={() => handleUpdateCartQty(item.id, item.quantity - 1)}
-                          className="w-5 h-5 rounded bg-gray-200 text-black flex items-center justify-center font-mono font-bold"
+                          type="button"
+                          onClick={() => handleRemoveFromCart(item.id)}
+                          className="text-gray-400 hover:text-red-600 p-1 hidden sm:block cursor-pointer shrink-0 ml-1"
+                          title="Remove item"
                         >
-                          -
-                        </button>
-                        <span className="font-mono font-bold text-black w-6 text-center">{item.quantity}</span>
-                        <button
-                          onClick={() => handleUpdateCartQty(item.id, item.quantity + 1)}
-                          className="w-5 h-5 rounded bg-gray-200 text-black flex items-center justify-center font-mono font-bold"
-                        >
-                          +
+                          <X className="w-4 h-4" />
                         </button>
                       </div>
-
-                      <span className="font-mono font-bold text-black">
-                        {systemSettings.currencySymbol || 'Php'} {((item.unitPrice ?? getProductUnitPrice(item.product, item.selectedSize, item.selectedColor, portal)) * item.quantity).toFixed(2)}
-                      </span>
-
-                      <button
-                        onClick={() => handleRemoveFromCart(item.id)}
-                        className="text-gray-400 hover:text-red-600 p-1 cursor-pointer"
-                      >
-                        <X className="w-3.5 h-3.5" />
-                      </button>
                     </div>
-                  </div>
-                ))}
+                  ))}
 
-                {cartItems.length === 0 && (
-                  <p className="text-center text-xs text-gray-400 font-mono py-4">Your order cart is empty.</p>
-                )}
-              </div>
-
-              <div className="flex justify-between items-center bg-black text-white p-3 rounded-xl font-mono text-xs font-bold">
-                <span>Subtotal Value:</span>
-                <span>{systemSettings.currencySymbol || 'Php'} {cartSubtotal.toFixed(2)}</span>
-              </div>
-            </div>
-
-            {/* Shopper Details Form */}
-            <form onSubmit={handleCheckoutSubmit} className="space-y-4 pt-2 border-t border-gray-100">
-              <h4 className="text-xs font-mono font-bold uppercase text-gray-400">Customer Details</h4>
-
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="space-y-1">
-                  <label className="block text-[10px] uppercase font-mono font-bold text-gray-700">
-                    Name <span className="text-red-500">*</span>
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    placeholder="e.g. Jane Doe"
-                    value={shopperName}
-                    onChange={(e) => setShopperName(e.target.value)}
-                    className="w-full bg-white border border-gray-200 focus:border-black rounded-xl px-3 py-2 text-xs font-semibold text-black focus:outline-none"
-                    id="shopper-name-input"
-                  />
-                </div>
-
-                <div className="space-y-1">
-                  <label className="block text-[10px] uppercase font-mono font-bold text-gray-700">
-                    Phone <span className="text-red-500">*</span>
-                  </label>
-                  <input
-                    type="tel"
-                    required
-                    placeholder="e.g. +63 917 123 4567"
-                    value={shopperPhone}
-                    onChange={(e) => setShopperPhone(e.target.value)}
-                    className="w-full bg-white border border-gray-200 focus:border-black rounded-xl px-3 py-2 text-xs font-semibold text-black focus:outline-none font-mono"
-                    id="shopper-phone-input"
-                  />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="space-y-1">
-                  <label className="block text-[10px] uppercase font-mono font-bold text-gray-700">
-                    Facebook Messenger Link
-                  </label>
-                  <input
-                    type="text"
-                    placeholder="e.g. https://m.me/janedoe or fb.com/janedoe"
-                    value={fbMessengerLink}
-                    onChange={(e) => setFbMessengerLink(e.target.value)}
-                    className="w-full bg-white border border-gray-200 focus:border-black rounded-xl px-3 py-2 text-xs text-black focus:outline-none font-mono"
-                    id="shopper-messenger-input"
-                  />
-                </div>
-
-                <div className="space-y-1">
-                  <label className="block text-[10px] uppercase font-mono font-bold text-gray-700">
-                    Email <span className="text-red-500">*</span>
-                  </label>
-                  <input
-                    type="email"
-                    required
-                    placeholder="jane.doe@company.com"
-                    value={shopperEmail}
-                    onChange={(e) => setShopperEmail(e.target.value)}
-                    className="w-full bg-white border border-gray-200 focus:border-black rounded-xl px-3 py-2 text-xs font-semibold text-black focus:outline-none font-mono"
-                    id="shopper-email-input"
-                  />
-                </div>
-              </div>
-
-              <div className="space-y-1">
-                <label className="block text-[10px] uppercase font-mono font-bold text-gray-700">
-                  Address <span className="text-red-500">*</span>
-                </label>
-                <input
-                  type="text"
-                  required
-                  placeholder="e.g. Marketing Dept, Floor 3, Building B"
-                  value={deliveryDept}
-                  onChange={(e) => setDeliveryDept(e.target.value)}
-                  className="w-full bg-white border border-gray-200 focus:border-black rounded-xl px-3 py-2 text-xs font-semibold text-black focus:outline-none"
-                  id="shopper-dept-input"
-                />
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="space-y-1">
-                  <label className="block text-[10px] uppercase font-mono font-bold text-gray-700">
-                    PO / Cost Center
-                  </label>
-                  <input
-                    type="text"
-                    placeholder="e.g. PO-90021"
-                    value={poNumber}
-                    onChange={(e) => setPoNumber(e.target.value)}
-                    className="w-full bg-white border border-gray-200 focus:border-black rounded-xl px-3 py-2 text-xs font-mono text-black focus:outline-none"
-                    id="shopper-po-input"
-                  />
-                </div>
-
-                <div className="space-y-1">
-                  <label className="block text-[10px] uppercase font-mono font-bold text-gray-700">
-                    Notes
-                  </label>
-                  <input
-                    type="text"
-                    placeholder="e.g. Urgent delivery required"
-                    value={orderNotes}
-                    onChange={(e) => setOrderNotes(e.target.value)}
-                    className="w-full bg-white border border-gray-200 focus:border-black rounded-xl px-3 py-2 text-xs text-black focus:outline-none font-sans"
-                    id="shopper-notes-input"
-                  />
-                </div>
-              </div>
-
-              <div className="pt-4 flex items-center justify-end gap-3">
-                <button
-                  type="button"
-                  onClick={() => setIsCheckoutOpen(false)}
-                  className="bg-white border border-gray-300 text-gray-600 hover:text-black font-bold text-xs uppercase tracking-wider py-2.5 px-5 rounded-xl transition-all cursor-pointer"
-                >
-                  Cancel
-                </button>
-
-                <button
-                  type="submit"
-                  disabled={isSubmitting || cartItems.length === 0}
-                  className="bg-black hover:bg-neutral-800 disabled:opacity-50 text-white font-extrabold text-xs uppercase tracking-wider py-3 px-6 rounded-xl border border-black shadow-md transition-all cursor-pointer flex items-center gap-2"
-                  id="submit-portal-order-btn"
-                >
-                  {isSubmitting ? (
-                    <span>Submitting Order...</span>
-                  ) : (
-                    <>
-                      <Send className="w-4 h-4" />
-                      <span>Submit Corporate Order</span>
-                    </>
+                  {cartItems.length === 0 && (
+                    <p className="text-center text-xs text-gray-400 font-mono py-4">Your order cart is empty.</p>
                   )}
-                </button>
+                </div>
+
+                <div className="flex justify-between items-center bg-black text-white p-3 rounded-xl font-mono text-xs font-bold">
+                  <span>Subtotal Value:</span>
+                  <span>{systemSettings.currencySymbol || 'Php'} {cartSubtotal.toFixed(2)}</span>
+                </div>
               </div>
-            </form>
+
+              {/* Shopper Details Form */}
+              <form onSubmit={handleCheckoutSubmit} className="space-y-4 pt-2 border-t border-gray-100">
+                <h4 className="text-xs font-mono font-bold uppercase text-gray-400">Customer Details</h4>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="space-y-1">
+                    <label className="block text-[10px] uppercase font-mono font-bold text-gray-700">
+                      Name <span className="text-red-500">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="e.g. Jane Doe"
+                      value={shopperName}
+                      onChange={(e) => setShopperName(e.target.value)}
+                      className="w-full bg-white border border-gray-200 focus:border-black rounded-xl px-3 py-2 text-xs font-semibold text-black focus:outline-none"
+                      id="shopper-name-input"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="block text-[10px] uppercase font-mono font-bold text-gray-700">
+                      Phone <span className="text-red-500">*</span>
+                    </label>
+                    <input
+                      type="tel"
+                      required
+                      placeholder="e.g. +63 917 123 4567"
+                      value={shopperPhone}
+                      onChange={(e) => setShopperPhone(e.target.value)}
+                      className="w-full bg-white border border-gray-200 focus:border-black rounded-xl px-3 py-2 text-xs font-semibold text-black focus:outline-none font-mono"
+                      id="shopper-phone-input"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="space-y-1">
+                    <label className="block text-[10px] uppercase font-mono font-bold text-gray-700">
+                      Facebook Messenger Link
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="e.g. https://m.me/janedoe or fb.com/janedoe"
+                      value={fbMessengerLink}
+                      onChange={(e) => setFbMessengerLink(e.target.value)}
+                      className="w-full bg-white border border-gray-200 focus:border-black rounded-xl px-3 py-2 text-xs text-black focus:outline-none font-mono"
+                      id="shopper-messenger-input"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="block text-[10px] uppercase font-mono font-bold text-gray-700">
+                      Email <span className="text-red-500">*</span>
+                    </label>
+                    <input
+                      type="email"
+                      required
+                      placeholder="jane.doe@company.com"
+                      value={shopperEmail}
+                      onChange={(e) => setShopperEmail(e.target.value)}
+                      className="w-full bg-white border border-gray-200 focus:border-black rounded-xl px-3 py-2 text-xs font-semibold text-black focus:outline-none font-mono"
+                      id="shopper-email-input"
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="block text-[10px] uppercase font-mono font-bold text-gray-700">
+                    Address <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="e.g. Marketing Dept, Floor 3, Building B"
+                    value={deliveryDept}
+                    onChange={(e) => setDeliveryDept(e.target.value)}
+                    className="w-full bg-white border border-gray-200 focus:border-black rounded-xl px-3 py-2 text-xs font-semibold text-black focus:outline-none"
+                    id="shopper-dept-input"
+                  />
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="space-y-1">
+                    <label className="block text-[10px] uppercase font-mono font-bold text-gray-700">
+                      PO / Cost Center
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="e.g. PO-90021"
+                      value={poNumber}
+                      onChange={(e) => setPoNumber(e.target.value)}
+                      className="w-full bg-white border border-gray-200 focus:border-black rounded-xl px-3 py-2 text-xs font-mono text-black focus:outline-none"
+                      id="shopper-po-input"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="block text-[10px] uppercase font-mono font-bold text-gray-700">
+                      Notes
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="e.g. Urgent delivery required"
+                      value={orderNotes}
+                      onChange={(e) => setOrderNotes(e.target.value)}
+                      className="w-full bg-white border border-gray-200 focus:border-black rounded-xl px-3 py-2 text-xs text-black focus:outline-none font-sans"
+                      id="shopper-notes-input"
+                    />
+                  </div>
+                </div>
+
+                <div className="pt-4 flex items-center justify-end gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setIsCheckoutOpen(false)}
+                    className="bg-white border border-gray-300 text-gray-600 hover:text-black font-bold text-xs uppercase tracking-wider py-2.5 px-5 rounded-xl transition-all cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+
+                  <button
+                    type="submit"
+                    disabled={isSubmitting || cartItems.length === 0}
+                    className="bg-black hover:bg-neutral-800 disabled:opacity-50 text-white font-extrabold text-xs uppercase tracking-wider py-3 px-6 rounded-xl border border-black shadow-md transition-all cursor-pointer flex items-center gap-2"
+                    id="submit-portal-order-btn"
+                  >
+                    {isSubmitting ? (
+                      <span>Submitting Order...</span>
+                    ) : (
+                      <>
+                        <Send className="w-4 h-4" />
+                        <span>Submit Corporate Order</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </form>
+            </div>
           </div>
         </div>
       )}

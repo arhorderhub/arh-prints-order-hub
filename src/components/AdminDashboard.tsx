@@ -56,7 +56,8 @@ import {
   RefreshCw,
   Inbox,
   FileSpreadsheet,
-  ExternalLink
+  ExternalLink,
+  MapPin
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import ClientDashboardModal from './ClientDashboardModal';
@@ -88,6 +89,8 @@ interface AdminDashboardProps {
   onPullFromSheets?: () => Promise<void>;
   isSyncingSheets?: boolean;
   initialTab?: 'clients' | 'catalog' | 'orders' | 'analytics' | 'settings' | 'sync';
+  initialCatalogSection?: 'catalog' | 'enquiries';
+  highlightEnquiryNumber?: string;
 }
 
 export default function AdminDashboard({
@@ -116,7 +119,9 @@ export default function AdminDashboard({
   onForceSyncAll,
   onPullFromSheets,
   isSyncingSheets,
-  initialTab
+  initialTab,
+  initialCatalogSection,
+  highlightEnquiryNumber
 }: AdminDashboardProps) {
   const [adminTab, setAdminTab] = useState<'clients' | 'catalog' | 'orders' | 'analytics' | 'settings' | 'sync'>(initialTab || 'clients');
 
@@ -627,6 +632,8 @@ export default function AdminDashboard({
           onSaveQuoteEnquiry={onSaveQuoteEnquiry}
           onAddProductToCompanyCatalog={onAddProductToCompanyCatalog}
           currencySymbol={currencySymbol}
+          initialSection={initialCatalogSection}
+          highlightEnquiryNumber={highlightEnquiryNumber}
         />
       )}
 
@@ -1175,24 +1182,51 @@ export default function AdminDashboard({
                             <h5 className="font-extrabold text-xs text-black uppercase tracking-tight">
                               {ord.companyName}
                             </h5>
-                            <div className="text-[10px] text-gray-500 font-mono mt-0.5 space-y-0.5">
-                              <span className="font-semibold block text-neutral-800">Customer: {getDisplayPurchaserName(ord)}</span>
-                              {ord.contactNumber && (
-                                <span className="text-gray-700 font-bold block">Phone: {ord.contactNumber}</span>
-                              )}
-                              {ord.fbMessengerLink && (
+                            <div className="text-[10px] text-gray-600 font-mono mt-1 space-y-1">
+                              {/* 1. Customer Name */}
+                              <div className="flex items-center gap-1 font-semibold text-neutral-900">
+                                <span className="text-gray-400">Customer:</span>
+                                <strong className="text-black font-extrabold">{getDisplayPurchaserName(ord)}</strong>
+                              </div>
+
+                              {/* 2. Delivery Address */}
+                              <div className="text-gray-700 font-sans text-[10px] leading-snug flex items-start gap-1 bg-gray-50 p-1.5 rounded-md border border-gray-100">
+                                <MapPin className="w-3 h-3 text-gray-500 shrink-0 mt-0.5" />
+                                <div className="min-w-0">
+                                  <span className="font-bold text-black font-mono text-[9px] block">Address:</span>
+                                  <span className="break-words">{ord.deliveryAddress || 'No address specified'}</span>
+                                </div>
+                              </div>
+
+                              {/* 3. Facebook Messenger Link */}
+                              {ord.fbMessengerLink ? (
                                 <a
                                   href={ord.fbMessengerLink.startsWith('http') ? ord.fbMessengerLink : `https://${ord.fbMessengerLink}`}
                                   target="_blank"
                                   rel="noopener noreferrer"
                                   onClick={(e) => e.stopPropagation()}
-                                  className="text-blue-600 hover:underline block font-extrabold text-[9px] flex items-center gap-1"
+                                  className="inline-flex items-center gap-1 bg-blue-50 border border-blue-200 hover:bg-blue-100 text-blue-700 px-2 py-0.5 rounded text-[9px] font-bold transition-colors cursor-pointer"
                                 >
-                                  <span>FB Messenger Profile</span>
-                                  <ExternalLink className="w-2.5 h-2.5" />
+                                  <span>💬 FB Messenger Link</span>
+                                  <ExternalLink className="w-2.5 h-2.5 text-blue-500" />
                                 </a>
+                              ) : (
+                                <div className="text-gray-400 text-[9px]">FB Messenger: Not provided</div>
                               )}
-                              <span className="text-gray-400 block break-all">{ord.contactEmail}</span>
+
+                              {/* Email & Phone */}
+                              <div className="flex flex-wrap gap-x-2 text-gray-500 text-[9px]">
+                                {ord.contactNumber && <span className="font-bold text-gray-700">📞 {ord.contactNumber}</span>}
+                                {ord.contactEmail && <span className="underline">{ord.contactEmail}</span>}
+                              </div>
+
+                              {/* 4. Notes */}
+                              {ord.notes && (
+                                <div className="mt-1 bg-amber-50 border border-amber-200 rounded p-1.5 text-[9px] font-mono text-amber-900 leading-tight">
+                                  <span className="font-bold block uppercase text-[8px] text-amber-700">Notes:</span>
+                                  <span className="italic">"{ord.notes}"</span>
+                                </div>
+                              )}
                             </div>
                             {ord.status === 'Pending Approval' && (
                               <div className="mt-1.5 bg-amber-50 border border-amber-200 rounded p-1.5 text-[9px] font-mono font-bold text-amber-900 leading-tight">
