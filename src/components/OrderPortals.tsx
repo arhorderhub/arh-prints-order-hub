@@ -4,7 +4,9 @@
  */
 
 import React, { useState, useMemo, useCallback } from 'react';
-import { OrderPortal, Product, CompanyProfile, SystemSettings, Order, getDisplayPurchaserName } from '../types';
+import * as XLSX from 'xlsx';
+import { OrderPortal, Product, CompanyProfile, SystemSettings, Order, CartItem, getDisplayPurchaserName } from '../types';
+import { getProductUnitPrice, getAddOnUnitPrice, makeCompositeId } from '../utils/pricing';
 import {
   Store,
   Plus,
@@ -27,13 +29,21 @@ import {
   Phone,
   MapPin,
   Sliders,
-  ChevronDown
+  ChevronDown,
+  FileSpreadsheet,
+  Printer,
+  CheckSquare,
+  Square,
+  FileText,
+  ShoppingBag,
+  AlertCircle
 } from 'lucide-react';
 
 interface OrderPortalsProps {
   portals: OrderPortal[];
   activeCompany: CompanyProfile;
   availableProducts: Product[];
+  allProducts?: Product[];
   systemSettings: SystemSettings;
   onCreatePortal: (portal: Omit<OrderPortal, 'id' | 'createdAt' | 'updatedAt' | 'shareToken'>) => void;
   onUpdatePortal: (portal: OrderPortal) => void;
@@ -43,12 +53,15 @@ interface OrderPortalsProps {
   orders?: Order[];
   onUpdateOrders?: (newOrders: Order[]) => Promise<void>;
   onUpdateOrderStatus?: (orderId: string, newStatus: Order['status']) => void;
+  onAddToCartBulk?: (items: Omit<CartItem, 'id'>[]) => void;
+  onOpenCart?: () => void;
 }
 
 export default function OrderPortals({
   portals,
   activeCompany,
   availableProducts,
+  allProducts,
   systemSettings,
   onCreatePortal,
   onUpdatePortal,
@@ -57,7 +70,9 @@ export default function OrderPortals({
   appsScriptUrl,
   orders = [],
   onUpdateOrders,
-  onUpdateOrderStatus
+  onUpdateOrderStatus,
+  onAddToCartBulk,
+  onOpenCart
 }: OrderPortalsProps) {
   // Filter portals belonging to active company
   const companyPortals = portals.filter(p => p.companyId === activeCompany.id);
@@ -81,6 +96,18 @@ export default function OrderPortals({
   const [orderSearch, setOrderSearch] = useState('');
   const [orderStatusFilter, setOrderStatusFilter] = useState<string>('all');
   const [orderSort, setOrderSort] = useState<'newest' | 'oldest' | 'amount_high' | 'amount_low' | 'az' | 'za'>('newest');
+
+  // Storefront Orders Batch Selection & Export State
+  const [selectedOrderIds, setSelectedOrderIds] = useState<string[]>([]);
+  const [isPrintPdfModalOpen, setIsPrintPdfModalOpen] = useState<boolean>(false);
+
+  // Cart Feedback Banner State
+  const [cartFeedback, setCartFeedback] = useState<{
+    success: boolean;
+    title: string;
+    message: string;
+    skippedItems?: string[];
+  } | null>(null);
 
   // UI Toast Feedback
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -132,6 +159,9 @@ export default function OrderPortals({
     setOrderSearch('');
     setOrderStatusFilter('all');
     setOrderSort('newest');
+    setSelectedOrderIds([]);
+    setIsPrintPdfModalOpen(false);
+    setCartFeedback(null);
     setIsModalOpen(true);
   };
 
@@ -148,6 +178,9 @@ export default function OrderPortals({
     setOrderSearch('');
     setOrderStatusFilter('all');
     setOrderSort('newest');
+    setSelectedOrderIds([]);
+    setIsPrintPdfModalOpen(false);
+    setCartFeedback(null);
     setIsModalOpen(true);
   };
 
@@ -313,6 +346,240 @@ export default function OrderPortals({
       return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
     });
   }, [editingPortalOrders, orderStatusFilter, orderSearch, orderSort]);
+
+  // Handle batch selection toggle
+  const handleToggleSelectAllOrders = () => {
+    if (filteredAndSortedPortalOrders.length === 0) return;
+    const visibleIds = filteredAndSortedPortalOrders.map(o => o.id);
+    const isAllSelected = visibleIds.every(id => selectedOrderIds.includes(id));
+    if (isAllSelected) {
+      setSelectedOrderIds(prev => prev.filter(id => !visibleIds.includes(id)));
+    } else {
+      setSelectedOrderIds(prev => Array.from(new Set([...prev, ...visibleIds])));
+    }
+  };
+
+  // Handle adding items from selected historical orders into the shopping cart
+  const handleAddSelectedToCart = () => {
+    const selectedOrders = editingPortalOrders.filter(o => selectedOrderIds.includes(o.id));
+    if (selectedOrders.length === 0) {
+      alert('Please select at least one order to add to cart.');
+      return;
+    }
+
+    const addedItemsMap = new Map<string, Omit<CartItem, 'id'>>();
+    const skippedDiscontinued: string[] = [];
+    const skippedInvalidQty: string[] = [];
+    let totalItemsAddedCount = 0;
+    let totalQuantityAdded = 0;
+
+    const findCatalogProduct = (productId: string, productName?: string): Product | null => {
+      // 1. Check in availableProducts (which includes scoped company products)
+      let match = availableProducts.find(p => p.id === productId);
+      if (match) return match;
+
+      // 2. Check in allProducts if provided
+      if (allProducts) {
+        match = allProducts.find(p => p.id === productId);
+        if (match) return match;
+      }
+
+      // 3. Check in activeCompany.customProducts
+      if (activeCompany.customProducts) {
+        match = activeCompany.customProducts.find(p => p.id === productId);
+        if (match) return match;
+      }
+
+      // 4. Fallback check by product name if product ID was adjusted
+      if (productName) {
+        const pNameLower = productName.trim().toLowerCase();
+        match = availableProducts.find(p => p.name.trim().toLowerCase() === pNameLower);
+        if (match) return match;
+        if (allProducts) {
+          match = allProducts.find(p => p.name.trim().toLowerCase() === pNameLower);
+          if (match) return match;
+        }
+      }
+
+      return null;
+    };
+
+    selectedOrders.forEach(order => {
+      const orderRef = order.orderNumber || order.id;
+      (order.items || []).forEach(item => {
+        // 1. Validate Quantity (Do not silently convert invalid quantities to 1)
+        const rawQty = item.quantity;
+        const numQty = typeof rawQty === 'number' ? rawQty : Number(rawQty);
+        if (isNaN(numQty) || numQty <= 0 || !Number.isFinite(numQty)) {
+          const itemDesc = item.productName || item.productId || 'Unknown Product';
+          skippedInvalidQty.push(`${itemDesc} from Order ${orderRef} (Invalid quantity: ${rawQty ?? 'missing'})`);
+          return;
+        }
+
+        // 2. Match to current Catalog Product using productId
+        const catalogProduct = findCatalogProduct(item.productId, item.productName);
+        if (!catalogProduct) {
+          const itemDesc = item.productName ? `"${item.productName}"` : `Product ID: ${item.productId}`;
+          skippedDiscontinued.push(`${itemDesc} from Order ${orderRef} (Product no longer in catalog)`);
+          return;
+        }
+
+        // 3. Resolve authoritative CURRENT BASE PRICE (portal = null)
+        // Explicitly ignores historical order price and portal custom price
+        const baseProductPrice = getProductUnitPrice(
+          catalogProduct,
+          item.selectedSize,
+          item.selectedColor,
+          null
+        );
+
+        // Resolve add-on pricing with portal = null
+        const baseAddOnsTotal = (item.selectedAddOns || []).reduce((sum, ao) => {
+          return sum + getAddOnUnitPrice(catalogProduct, ao, null);
+        }, 0);
+
+        const authoritativeUnitPrice = baseProductPrice + baseAddOnsTotal;
+
+        // 4. Composite Key for Deduplication & Aggregation
+        const customs = item.customDetails || {};
+        const compositeKey = makeCompositeId(
+          catalogProduct.id,
+          item.selectedSize,
+          item.selectedColor,
+          customs
+        );
+
+        // 5. Aggregate quantities for identical product/variant/custom configurations
+        if (addedItemsMap.has(compositeKey)) {
+          const existing = addedItemsMap.get(compositeKey)!;
+          existing.quantity += numQty;
+        } else {
+          addedItemsMap.set(compositeKey, {
+            product: catalogProduct,
+            quantity: numQty,
+            selectedSize: item.selectedSize,
+            selectedColor: item.selectedColor,
+            selectedAddOns: item.selectedAddOns,
+            customDetails: customs,
+            unitPrice: authoritativeUnitPrice
+          });
+        }
+
+        totalQuantityAdded += numQty;
+        totalItemsAddedCount += 1;
+      });
+    });
+
+    const itemsToAdd = Array.from(addedItemsMap.values());
+
+    // Ingest into active cart
+    if (itemsToAdd.length > 0 && onAddToCartBulk) {
+      onAddToCartBulk(itemsToAdd);
+    }
+
+    // Open existing cart drawer
+    if (itemsToAdd.length > 0 && onOpenCart) {
+      onOpenCart();
+    }
+
+    // Set interactive feedback banner summarizing added & skipped items
+    const hasAdded = itemsToAdd.length > 0;
+    const allSkipped = [...skippedDiscontinued, ...skippedInvalidQty];
+
+    setCartFeedback({
+      success: hasAdded,
+      title: hasAdded ? 'Added to Cart' : 'Could Not Add to Cart',
+      message: hasAdded
+        ? `Successfully added ${itemsToAdd.length} item line${itemsToAdd.length > 1 ? 's' : ''} (${totalQuantityAdded} total units) to cart at current base prices.`
+        : 'None of the items from the selected orders could be added to your cart.',
+      skippedItems: allSkipped.length > 0 ? allSkipped : undefined
+    });
+  };
+
+  // Export selected storefront orders to Excel (.xlsx) file
+  const handleExportToExcel = () => {
+    const selectedOrders = editingPortalOrders.filter(o => selectedOrderIds.includes(o.id));
+    if (selectedOrders.length === 0) {
+      alert('Please select at least one order to export.');
+      return;
+    }
+
+    const portalName = editingPortal?.name || 'Storefront';
+
+    // Itemized sheet rows (all order details, sizes, colors, add-ons, etc.)
+    const itemRows: any[] = [];
+    selectedOrders.forEach((ord) => {
+      ord.items.forEach((it: any) => {
+        const addOnsStr = it.selectedAddOns
+          ? Array.isArray(it.selectedAddOns)
+            ? it.selectedAddOns.map((a: any) => (typeof a === 'string' ? a : a.name)).join(', ')
+            : String(it.selectedAddOns)
+          : '';
+
+        const customStr = it.customDetails
+          ? Object.entries(it.customDetails).map(([k, v]) => `${k}: ${v}`).join(' | ')
+          : '';
+
+        const qty = Number(it.quantity) || 1;
+        const unitPrice = Number(it.unitPrice ?? it.price) || 0;
+        const lineTotal = qty * unitPrice;
+
+        itemRows.push({
+          'Order #': ord.orderNumber || ord.id,
+          'Order Date': new Date(ord.createdAt).toLocaleDateString(),
+          'Order Time': new Date(ord.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          'Storefront Portal': ord.portalName || portalName,
+          'Order Status': ord.status,
+          'Company Name': ord.companyName || activeCompany.name,
+          'Purchaser / Submitter': getDisplayPurchaserName(ord),
+          'Contact Email': ord.contactEmail || '',
+          'Contact Phone': ord.contactNumber || '',
+          'Delivery Address': ord.deliveryAddress || '',
+          'PO Number': ord.poNumber || '',
+          'Product Name': it.productName || it.name || 'Custom Product',
+          'Size': it.selectedSize || it.size || '',
+          'Color': it.selectedColor || it.color || '',
+          'Add-Ons': addOnsStr,
+          'Custom Options': customStr,
+          'Item Submitter': it.submitterName ? `${it.submitterName} (${it.submitterEmail || ''})` : '',
+          'Quantity': qty,
+          'Unit Price': unitPrice,
+          'Line Subtotal': lineTotal,
+          'Order Total Amount': Number(ord.totalAmount) || 0,
+          'Notes': ord.notes || ''
+        });
+      });
+    });
+
+    // Orders summary sheet
+    const summaryRows = selectedOrders.map(ord => ({
+      'Order #': ord.orderNumber || ord.id,
+      'Order Date': new Date(ord.createdAt).toLocaleDateString(),
+      'Storefront Portal': ord.portalName || portalName,
+      'Status': ord.status,
+      'Company': ord.companyName || activeCompany.name,
+      'Purchaser Name': getDisplayPurchaserName(ord),
+      'Contact Email': ord.contactEmail || '',
+      'Contact Phone': ord.contactNumber || '',
+      'PO Number': ord.poNumber || '',
+      'Total Items Count': ord.items.reduce((sum, i: any) => sum + (Number(i.quantity) || 1), 0),
+      'Order Total Amount': Number(ord.totalAmount) || 0,
+      'Delivery Address': ord.deliveryAddress || '',
+      'Notes': ord.notes || ''
+    }));
+
+    const wb = XLSX.utils.book_new();
+    const wsItemized = XLSX.utils.json_to_sheet(itemRows);
+    const wsSummary = XLSX.utils.json_to_sheet(summaryRows);
+
+    XLSX.utils.book_append_sheet(wb, wsItemized, "Itemized Details");
+    XLSX.utils.book_append_sheet(wb, wsSummary, "Orders Summary");
+
+    const cleanPortalName = portalName.replace(/[^a-zA-Z0-9]/g, '_');
+    const filename = `${cleanPortalName}_Storefront_Orders_${new Date().toISOString().split('T')[0]}.xlsx`;
+
+    XLSX.writeFile(wb, filename);
+  };
 
   const filteredModalProducts = availableProducts.filter(p =>
     p.name.toLowerCase().includes(productSearch.toLowerCase()) ||
@@ -553,7 +820,7 @@ export default function OrderPortals({
                         <div className="min-w-0">
                           <h4 className="text-xs font-bold text-black uppercase tracking-tight truncate">{prod.name}</h4>
                           <span className="text-[10px] text-gray-500 font-mono block mt-0.5">
-                            Base: {systemSettings.currencySymbol || 'Php'} {prod.basePrice.toFixed(2)} / {prod.unit}
+                            Base: {systemSettings.currencySymbol || 'Php'} {(Number(prod.basePrice) || 0).toFixed(2)} / {prod.unit}
                           </span>
                         </div>
                       </div>
@@ -825,6 +1092,133 @@ export default function OrderPortals({
               </div>
             </div>
 
+            {/* Feedback Banner for Add Selected to Cart / Operations */}
+            {cartFeedback && (
+              <div
+                className={`rounded-2xl p-4 border flex items-start justify-between gap-3 shadow-xs animate-fade-in ${
+                  cartFeedback.success
+                    ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
+                    : 'bg-amber-50 border-amber-200 text-amber-900'
+                }`}
+                id="portal-cart-feedback-banner"
+              >
+                <div className="flex items-start gap-3">
+                  {cartFeedback.success ? (
+                    <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
+                  ) : (
+                    <AlertCircle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+                  )}
+                  <div className="space-y-1">
+                    <h4 className="text-xs font-extrabold uppercase tracking-wider font-mono">
+                      {cartFeedback.title}
+                    </h4>
+                    <p className="text-xs leading-relaxed font-sans">{cartFeedback.message}</p>
+                    {cartFeedback.skippedItems && cartFeedback.skippedItems.length > 0 && (
+                      <div className="mt-2 pt-2 border-t border-amber-200/60 text-[11px] font-sans space-y-1 text-amber-800">
+                        <div className="font-bold font-mono uppercase text-[10px] tracking-wider text-amber-900">
+                          Items not added ({cartFeedback.skippedItems.length}):
+                        </div>
+                        <ul className="list-disc list-inside space-y-0.5 pl-1">
+                          {cartFeedback.skippedItems.map((item, idx) => (
+                            <li key={idx}>{item}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                  </div>
+                </div>
+                <button
+                  onClick={() => setCartFeedback(null)}
+                  className="text-gray-400 hover:text-black p-1 rounded-lg cursor-pointer transition-colors"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            )}
+
+            {/* Batch Selection & Export Actions Bar */}
+            {filteredAndSortedPortalOrders.length > 0 && (
+              <div className="bg-neutral-900 text-white rounded-2xl p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-md">
+                <div className="flex items-center gap-3">
+                  <label className="flex items-center gap-2 cursor-pointer font-mono text-xs font-bold text-white hover:text-amber-300 transition-colors">
+                    <input
+                      type="checkbox"
+                      checked={
+                        filteredAndSortedPortalOrders.length > 0 &&
+                        filteredAndSortedPortalOrders.every(o => selectedOrderIds.includes(o.id))
+                      }
+                      onChange={handleToggleSelectAllOrders}
+                      className="w-4 h-4 accent-amber-400 rounded cursor-pointer"
+                    />
+                    <span>
+                      Select All Visible ({filteredAndSortedPortalOrders.length})
+                    </span>
+                  </label>
+
+                  {selectedOrderIds.length > 0 && (
+                    <span className="bg-amber-400 text-black text-[11px] font-mono font-black px-2.5 py-0.5 rounded-full">
+                      {selectedOrderIds.length} Selected
+                    </span>
+                  )}
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2.5 w-full sm:w-auto">
+                  {selectedOrderIds.length > 0 && (
+                    <button
+                      onClick={() => setSelectedOrderIds([])}
+                      className="text-xs text-neutral-400 hover:text-white font-mono underline cursor-pointer mr-2"
+                    >
+                      Clear Selection
+                    </button>
+                  )}
+
+                  {/* Add Selected to Cart */}
+                  <button
+                    onClick={handleAddSelectedToCart}
+                    disabled={selectedOrderIds.length === 0}
+                    className={`px-3.5 py-2 rounded-xl text-xs font-extrabold flex items-center gap-2 transition-all cursor-pointer shadow-sm ${
+                      selectedOrderIds.length > 0
+                        ? 'bg-amber-400 hover:bg-amber-300 text-black'
+                        : 'bg-neutral-800 text-neutral-500 cursor-not-allowed opacity-60'
+                    }`}
+                    title={selectedOrderIds.length === 0 ? 'Select at least 1 order to add to cart' : 'Add items from selected orders to shopping cart'}
+                    id="portal-add-selected-to-cart-btn"
+                  >
+                    <ShoppingBag className="w-4 h-4" />
+                    <span>Add Selected to Cart</span>
+                  </button>
+
+                  <button
+                    onClick={handleExportToExcel}
+                    disabled={selectedOrderIds.length === 0}
+                    className={`px-3.5 py-2 rounded-xl text-xs font-extrabold flex items-center gap-2 transition-all cursor-pointer shadow-sm ${
+                      selectedOrderIds.length > 0
+                        ? 'bg-emerald-600 hover:bg-emerald-500 text-white'
+                        : 'bg-neutral-800 text-neutral-500 cursor-not-allowed opacity-60'
+                    }`}
+                    title={selectedOrderIds.length === 0 ? 'Select at least 1 order to export' : 'Export selected orders to Excel / Google Sheets'}
+                  >
+                    <FileSpreadsheet className="w-4 h-4" />
+                    <span>Export to Excel / Sheets ({selectedOrderIds.length})</span>
+                  </button>
+
+                  <button
+                    onClick={() => setIsPrintPdfModalOpen(true)}
+                    disabled={selectedOrderIds.length === 0}
+                    className={`px-3.5 py-2 rounded-xl text-xs font-extrabold flex items-center gap-2 transition-all cursor-pointer shadow-sm ${
+                      selectedOrderIds.length > 0
+                        ? 'bg-neutral-700 hover:bg-neutral-600 text-white'
+                        : 'bg-neutral-800 text-neutral-500 cursor-not-allowed opacity-60'
+                    }`}
+                    title={selectedOrderIds.length === 0 ? 'Select at least 1 order to print / save as PDF' : 'Print or save compiled orders as PDF'}
+                  >
+                    <Printer className="w-4 h-4" />
+                    <span>Print / Save as PDF ({selectedOrderIds.length})</span>
+                  </button>
+                </div>
+              </div>
+            )}
+
             {/* Orders Cards List */}
             {filteredAndSortedPortalOrders.length === 0 ? (
               <div className="bg-white border border-dashed border-gray-300 rounded-3xl p-12 text-center space-y-3">
@@ -838,28 +1232,51 @@ export default function OrderPortals({
               </div>
             ) : (
               <div className="space-y-6">
-                {filteredAndSortedPortalOrders.map(ord => (
-                  <div
-                    key={ord.id}
-                    className="bg-white border border-gray-200 hover:border-gray-300 rounded-3xl p-6 shadow-xs transition-all space-y-6"
-                    id={`storefront-order-card-${ord.id}`}
-                  >
-                    {/* Header Row */}
-                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-gray-100">
-                      <div className="space-y-1">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="text-sm font-black text-black font-mono tracking-tight">{ord.orderNumber || ord.id}</span>
-                          <span className="text-xs font-mono text-gray-400">
-                            • {new Date(ord.createdAt).toLocaleDateString()} at {new Date(ord.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                          </span>
+                {filteredAndSortedPortalOrders.map(ord => {
+                  const isSelected = selectedOrderIds.includes(ord.id);
+                  return (
+                    <div
+                      key={ord.id}
+                      className={`bg-white border rounded-3xl p-6 shadow-xs transition-all space-y-6 ${
+                        isSelected
+                          ? 'border-black ring-2 ring-black/10 bg-amber-50/20'
+                          : 'border-gray-200 hover:border-gray-300'
+                      }`}
+                      id={`storefront-order-card-${ord.id}`}
+                    >
+                      {/* Header Row */}
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-gray-100">
+                        <div className="flex items-center gap-3">
+                          {/* Order Card Selection Checkbox */}
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            onChange={(e) => {
+                              if (e.target.checked) {
+                                setSelectedOrderIds(prev => [...prev, ord.id]);
+                              } else {
+                                setSelectedOrderIds(prev => prev.filter(id => id !== ord.id));
+                              }
+                            }}
+                            className="w-5 h-5 accent-black rounded cursor-pointer shrink-0"
+                            id={`select-order-checkbox-${ord.id}`}
+                          />
+
+                          <div className="space-y-1">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="text-sm font-black text-black font-mono tracking-tight">{ord.orderNumber || ord.id}</span>
+                              <span className="text-xs font-mono text-gray-400">
+                                • {new Date(ord.createdAt).toLocaleDateString()} at {new Date(ord.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <span className="bg-gray-100 text-gray-700 text-[10px] font-mono font-bold px-2.5 py-0.5 rounded-full flex items-center gap-1">
+                                <Globe className="w-3 h-3 text-gray-500" />
+                                <span>{ord.portalName || editingPortal.name}</span>
+                              </span>
+                            </div>
+                          </div>
                         </div>
-                        <div className="flex items-center gap-2">
-                          <span className="bg-gray-100 text-gray-700 text-[10px] font-mono font-bold px-2.5 py-0.5 rounded-full flex items-center gap-1">
-                            <Globe className="w-3 h-3 text-gray-500" />
-                            <span>{ord.portalName || editingPortal.name}</span>
-                          </span>
-                        </div>
-                      </div>
 
                       {/* Status Badge & Status Selector */}
                       <div className="flex items-center gap-3">
@@ -1040,9 +1457,225 @@ export default function OrderPortals({
                       </span>
                     </div>
                   </div>
-                ))}
+                );
+              })}
               </div>
             )}
+          </div>
+        )}
+
+        {/* Print / Save as PDF Compilation Modal */}
+        {isPrintPdfModalOpen && editingPortal && (
+          <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto animate-fade-in">
+            <div className="bg-white border border-gray-200 rounded-3xl max-w-4xl w-full p-6 md:p-8 shadow-2xl space-y-6 my-8 max-h-[90vh] flex flex-col">
+              {/* Non-printable modal controls header */}
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-gray-100 pb-4 shrink-0 no-print">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="bg-amber-100 text-amber-900 text-xs font-mono font-extrabold px-2.5 py-0.5 rounded-full">
+                      PDF / Print Compilation
+                    </span>
+                    <span className="text-xs text-gray-500 font-mono">
+                      ({selectedOrderIds.length} Orders Selected)
+                    </span>
+                  </div>
+                  <h3 className="text-xl font-extrabold text-black uppercase tracking-tight mt-1">
+                    Storefront Orders Summary Report
+                  </h3>
+                  <p className="text-xs text-gray-500 font-mono">
+                    Portal: {editingPortal.name} • {activeCompany.name}
+                  </p>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2.5">
+                  <button
+                    onClick={handleExportToExcel}
+                    className="bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs px-3.5 py-2 rounded-xl flex items-center gap-1.5 transition-colors cursor-pointer"
+                  >
+                    <FileSpreadsheet className="w-4 h-4" />
+                    <span>Save as Excel / Sheets</span>
+                  </button>
+
+                  <button
+                    onClick={() => window.print()}
+                    className="bg-black hover:bg-neutral-800 text-white font-extrabold text-xs px-4 py-2 rounded-xl flex items-center gap-1.5 transition-colors cursor-pointer shadow-sm"
+                  >
+                    <Printer className="w-4 h-4" />
+                    <span>Print / Save as PDF</span>
+                  </button>
+
+                  <button
+                    onClick={() => setIsPrintPdfModalOpen(false)}
+                    className="p-2 text-gray-400 hover:text-black hover:bg-gray-100 rounded-xl transition-colors cursor-pointer"
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+              </div>
+
+              {/* Printable Area */}
+              <div className="overflow-y-auto pr-2 space-y-8 flex-1" id="print-compiled-orders-area">
+                <style>{`
+                  @media print {
+                    body * {
+                      visibility: hidden !important;
+                    }
+                    #print-compiled-orders-area, #print-compiled-orders-area * {
+                      visibility: visible !important;
+                    }
+                    #print-compiled-orders-area {
+                      position: absolute !important;
+                      left: 0 !important;
+                      top: 0 !important;
+                      width: 100% !important;
+                      padding: 20px !important;
+                      background: white !important;
+                      color: black !important;
+                    }
+                    .no-print {
+                      display: none !important;
+                    }
+                    .page-break {
+                      page-break-after: always;
+                    }
+                  }
+                `}</style>
+
+                {/* Header Summary Card */}
+                <div className="bg-gray-50 border border-gray-200 rounded-2xl p-6 flex flex-col sm:flex-row justify-between gap-6">
+                  <div className="space-y-1">
+                    <h2 className="text-2xl font-black text-black uppercase tracking-tight">
+                      STOREFRONT ORDERS COMPILATION
+                    </h2>
+                    <p className="text-xs font-mono text-gray-700">
+                      Company: <strong className="text-black">{activeCompany.name}</strong> • Storefront: <strong className="text-black">{editingPortal.name}</strong>
+                    </p>
+                    <p className="text-xs font-mono text-gray-500">
+                      Report Generated: {new Date().toLocaleDateString()} at {new Date().toLocaleTimeString()}
+                    </p>
+                  </div>
+
+                  <div className="bg-white border border-gray-200 rounded-xl p-4 text-right space-y-1 font-mono shrink-0">
+                    <span className="text-[10px] uppercase font-bold text-gray-400 block">Total Selected Orders</span>
+                    <span className="text-xl font-black text-black">{selectedOrderIds.length} Orders</span>
+                    <div className="pt-1 border-t border-gray-100">
+                      <span className="text-[10px] uppercase font-bold text-gray-400 block">Combined Total Amount</span>
+                      <span className="text-lg font-black text-emerald-700">
+                        {systemSettings.currencySymbol || 'Php'}{' '}
+                        {editingPortalOrders
+                          .filter(o => selectedOrderIds.includes(o.id))
+                          .reduce((sum, o) => sum + (o.totalAmount || 0), 0)
+                          .toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Selected Orders Cards List */}
+                <div className="space-y-6">
+                  {editingPortalOrders
+                    .filter(o => selectedOrderIds.includes(o.id))
+                    .map((ord, idx) => (
+                      <div
+                        key={ord.id}
+                        className="bg-white border border-gray-300 rounded-2xl p-6 space-y-4 shadow-2xs page-break"
+                      >
+                        {/* Order Header */}
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-gray-200 pb-3">
+                          <div className="flex items-center gap-3">
+                            <span className="w-7 h-7 rounded-full bg-black text-white font-mono text-xs font-black flex items-center justify-center">
+                              #{idx + 1}
+                            </span>
+                            <div>
+                              <span className="text-base font-black text-black font-mono">
+                                {ord.orderNumber || ord.id}
+                              </span>
+                              <span className="text-xs font-mono text-gray-500 block">
+                                Date: {new Date(ord.createdAt).toLocaleDateString()} at {new Date(ord.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                              </span>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-2">
+                            <span className="bg-gray-100 border border-gray-200 text-black text-xs font-mono font-bold px-3 py-1 rounded-full uppercase">
+                              Status: {ord.status}
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Customer / Submitter Details */}
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 bg-gray-50 border border-gray-200 rounded-xl p-3 text-xs font-mono">
+                          <div>
+                            <span className="text-[10px] text-gray-400 font-bold uppercase block">Purchaser / Submitter</span>
+                            <span className="font-extrabold text-black">{getDisplayPurchaserName(ord)}</span>
+                          </div>
+                          <div>
+                            <span className="text-[10px] text-gray-400 font-bold uppercase block">Contact Info</span>
+                            <span className="font-semibold text-gray-800">{ord.contactEmail || 'No Email'} • {ord.contactNumber || 'No Phone'}</span>
+                          </div>
+                          <div>
+                            <span className="text-[10px] text-gray-400 font-bold uppercase block">PO # &amp; Delivery Address</span>
+                            <span className="font-semibold text-gray-800">
+                              {ord.poNumber ? `PO: ${ord.poNumber} | ` : ''} {ord.deliveryAddress || 'No Address'}
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Items Table */}
+                        <div className="border border-gray-200 rounded-xl overflow-hidden">
+                          <table className="w-full text-left text-xs">
+                            <thead className="bg-gray-100 border-b border-gray-200 font-mono text-[10px] font-bold text-gray-600 uppercase">
+                              <tr>
+                                <th className="p-2.5">Qty</th>
+                                <th className="p-2.5">Product Description &amp; Details</th>
+                                <th className="p-2.5 text-right">Unit Price</th>
+                                <th className="p-2.5 text-right">Subtotal</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-gray-100 font-mono">
+                              {ord.items.map((it, i) => (
+                                <tr key={i} className="align-top">
+                                  <td className="p-2.5 font-bold text-black">{it.quantity}x</td>
+                                  <td className="p-2.5">
+                                    <span className="font-extrabold text-black block">{it.productName || (it as any).name}</span>
+                                    <div className="text-[11px] text-gray-600 font-sans mt-0.5 space-x-2">
+                                      {it.selectedSize && <span>Size: <strong>{it.selectedSize}</strong></span>}
+                                      {it.selectedColor && <span>Color: <strong>{it.selectedColor}</strong></span>}
+                                      {it.customDetails && Object.entries(it.customDetails).map(([k, v]) => (
+                                        <span key={k}>| {k}: <strong>{String(v)}</strong></span>
+                                      ))}
+                                      {it.selectedAddOns && it.selectedAddOns.length > 0 && (
+                                        <div>Add-ons: <strong>{it.selectedAddOns.map((a: any) => typeof a === 'string' ? a : a.name).join(', ')}</strong></div>
+                                      )}
+                                      {it.submitterName && (
+                                        <div className="text-[10px] text-gray-500 italic mt-0.5">Submitted by: {it.submitterName}</div>
+                                      )}
+                                    </div>
+                                  </td>
+                                  <td className="p-2.5 text-right text-gray-700">
+                                    {systemSettings.currencySymbol || 'Php'} {it.price.toFixed(2)}
+                                  </td>
+                                  <td className="p-2.5 text-right font-bold text-black">
+                                    {systemSettings.currencySymbol || 'Php'} {(it.price * it.quantity).toFixed(2)}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+
+                        {/* Order Total */}
+                        <div className="flex justify-between items-center font-mono pt-1 text-xs">
+                          <span className="text-gray-500 font-bold uppercase">Order Total:</span>
+                          <span className="text-sm font-black text-black">
+                            {systemSettings.currencySymbol || 'Php'} {ord.totalAmount.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                </div>
+              </div>
+            </div>
           </div>
         )}
 

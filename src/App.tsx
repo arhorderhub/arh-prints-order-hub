@@ -3,11 +3,33 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Product, CompanyProfile, Order, CartItem, AppsScriptConfig, SystemSettings, CatalogProduct, QuoteEnquiry, OrderPortal, AppNotification, getDisplayPurchaserName } from './types';
+import {
+  Product,
+  CompanyProfile,
+  Order,
+  CartItem,
+  AppsScriptConfig,
+  SystemSettings,
+  CatalogProduct,
+  QuoteEnquiry,
+  OrderPortal,
+  AppNotification,
+  Job,
+  JobColumn,
+  JobItemColumn,
+  JobStatus,
+  StaffMember,
+  PayrollRecord,
+  ExpenseRecord,
+  ExpenseCategory,
+  RecurringExpenseRule,
+  getDisplayPurchaserName
+} from './types';
 import { INITIAL_PRODUCTS, INITIAL_COMPANIES, INITIAL_ORDERS, INITIAL_PORTALS } from './data/mockData';
 import { INITIAL_CATALOG_PRODUCTS, INITIAL_QUOTE_ENQUIRIES, sanitizeCatalogProduct } from './data/initialCatalog';
+import { INITIAL_JOBS, DEFAULT_JOB_COLUMNS, DEFAULT_JOB_ITEM_COLUMNS, createJobFromOrder } from './data/initialJobs';
 import { DEFAULT_QUOTE_NOTES } from './constants/quoteDefaults';
 import { sheetsService } from './lib/sheetsService';
 import { EMBEDDED_APPS_SCRIPT_URL } from './config';
@@ -21,11 +43,12 @@ import SettingsPanel from './components/SettingsPanel';
 import Cart from './components/Cart';
 import LoginScreen from './components/LoginScreen';
 import AdminDashboard from './components/AdminDashboard';
+import NavigationDrawer from './components/NavigationDrawer';
 import OrderPortals from './components/OrderPortals';
 import PublicOrderPortal from './components/PublicOrderPortal';
 import { getProductUnitPrice } from './utils/pricing';
 import { getItemColorImage } from './utils/colorUtils';
-import { Check, AlertCircle, ShoppingBag, ArrowRight, Printer, RefreshCw, LogOut, Store } from 'lucide-react';
+import { Check, AlertCircle, ShoppingBag, ArrowRight, Printer, RefreshCw, Store } from 'lucide-react';
 
 function getThemeStyles(colorHex: string) {
   let primary = colorHex || '#000000';
@@ -276,7 +299,16 @@ export default function App() {
 
   const [orders, setOrders] = useState<Order[]>(() => {
     const cached = localStorage.getItem('rp_orders');
-    return cached ? JSON.parse(cached) : INITIAL_ORDERS;
+    if (cached) {
+      try {
+        const parsed: Order[] = JSON.parse(cached);
+        // Filter out legacy default mock orders
+        return parsed.filter(o => !['ord-1001', 'ord-1002', 'ord-1003'].includes(o.id));
+      } catch {
+        return [];
+      }
+    }
+    return INITIAL_ORDERS;
   });
 
   const [catalogProducts, setCatalogProducts] = useState<CatalogProduct[]>(() => {
@@ -307,9 +339,168 @@ export default function App() {
     return [];
   });
 
+  const [jobs, setJobs] = useState<Job[]>(() => {
+    const cached = localStorage.getItem('rp_jobs');
+    if (cached) {
+      try {
+        const parsed: Job[] = JSON.parse(cached);
+        return Array.isArray(parsed) ? parsed : [];
+      } catch {
+        return [];
+      }
+    }
+    return [];
+  });
+
+  const [jobColumns, setJobColumns] = useState<JobColumn[]>(() => {
+    const cached = localStorage.getItem('rp_job_columns');
+    if (!cached) return DEFAULT_JOB_COLUMNS;
+    try {
+      const parsed: JobColumn[] = JSON.parse(cached);
+      if (!Array.isArray(parsed)) return DEFAULT_JOB_COLUMNS;
+      const map = new Map<string, JobColumn>();
+      for (const col of parsed) {
+        if (col && col.id) map.set(col.id, col);
+      }
+      return Array.from(map.values());
+    } catch {
+      return DEFAULT_JOB_COLUMNS;
+    }
+  });
+
+  const [jobItemColumns, setJobItemColumns] = useState<JobItemColumn[]>(() => {
+    const cached = localStorage.getItem('rp_job_item_columns');
+    if (!cached) return DEFAULT_JOB_ITEM_COLUMNS;
+    try {
+      const parsed: JobItemColumn[] = JSON.parse(cached);
+      if (!Array.isArray(parsed)) return DEFAULT_JOB_ITEM_COLUMNS;
+      const map = new Map<string, JobItemColumn>();
+      for (const col of parsed) {
+        if (col && col.id) map.set(col.id, col);
+      }
+      return Array.from(map.values());
+    } catch {
+      return DEFAULT_JOB_ITEM_COLUMNS;
+    }
+  });
+
+  const [highlightJobId, setHighlightJobId] = useState<string | undefined>(undefined);
+  const jobSaveDebounceTimers = useRef<Map<string, NodeJS.Timeout>>(new Map());
+  const hasCleanedUpHistoricalColumnsRef = useRef<boolean>(false);
+
+  const DEFAULT_EXPENSE_CATEGORIES: ExpenseCategory[] = [
+    { id: 'cat-salaries', name: 'Salaries & Payroll', isSystem: true, status: 'Active' },
+    { id: 'cat-materials', name: 'Raw Materials & Inks', isSystem: true, status: 'Active' },
+    { id: 'cat-rent', name: 'Rent & Facilities', isSystem: true, status: 'Active' },
+    { id: 'cat-utilities', name: 'Utilities & Power', isSystem: true, status: 'Active' },
+    { id: 'cat-equipment', name: 'Equipment & Maintenance', isSystem: true, status: 'Active' },
+    { id: 'cat-logistics', name: 'Delivery & Logistics', isSystem: true, status: 'Active' },
+    { id: 'cat-software', name: 'Software & Subscriptions', isSystem: true, status: 'Active' },
+    { id: 'cat-tax', name: 'Taxes & Licenses', isSystem: true, status: 'Active' },
+    { id: 'cat-marketing', name: 'Marketing & Sales', isSystem: true, status: 'Active' },
+    { id: 'cat-misc', name: 'Miscellaneous', isSystem: true, status: 'Active' }
+  ];
+
+  const [staff, setStaff] = useState<StaffMember[]>(() => {
+    const cached = localStorage.getItem('rp_staff');
+    if (cached) {
+      try {
+        const parsed = JSON.parse(cached);
+        return Array.isArray(parsed) ? parsed : [];
+      } catch {
+        return [];
+      }
+    }
+    return [];
+  });
+
+  const [payroll, setPayroll] = useState<PayrollRecord[]>(() => {
+    const cached = localStorage.getItem('rp_payroll');
+    if (cached) {
+      try {
+        const parsed = JSON.parse(cached);
+        return Array.isArray(parsed) ? parsed : [];
+      } catch {
+        return [];
+      }
+    }
+    return [];
+  });
+
+  const [expenses, setExpenses] = useState<ExpenseRecord[]>(() => {
+    const cached = localStorage.getItem('rp_expenses');
+    if (cached) {
+      try {
+        const parsed = JSON.parse(cached);
+        return Array.isArray(parsed) ? parsed : [];
+      } catch {
+        return [];
+      }
+    }
+    return [];
+  });
+
+  const [recurringExpenses, setRecurringExpenses] = useState<RecurringExpenseRule[]>(() => {
+    const cached = localStorage.getItem('rp_recurring_expenses');
+    if (cached) {
+      try {
+        const parsed = JSON.parse(cached);
+        return Array.isArray(parsed) ? parsed : [];
+      } catch {
+        return [];
+      }
+    }
+    return [];
+  });
+
+  const [expenseCategories, setExpenseCategories] = useState<ExpenseCategory[]>(() => {
+    const cached = localStorage.getItem('rp_expense_categories');
+    if (cached) {
+      try {
+        const parsed = JSON.parse(cached);
+        return Array.isArray(parsed) && parsed.length > 0 ? parsed : DEFAULT_EXPENSE_CATEGORIES;
+      } catch {
+        return DEFAULT_EXPENSE_CATEGORIES;
+      }
+    }
+    return DEFAULT_EXPENSE_CATEGORIES;
+  });
+
   useEffect(() => {
     localStorage.setItem('rp_notifications', JSON.stringify(notifications));
   }, [notifications]);
+
+  useEffect(() => {
+    localStorage.setItem('rp_jobs', JSON.stringify(jobs));
+  }, [jobs]);
+
+  useEffect(() => {
+    localStorage.setItem('rp_job_columns', JSON.stringify(jobColumns));
+  }, [jobColumns]);
+
+  useEffect(() => {
+    localStorage.setItem('rp_job_item_columns', JSON.stringify(jobItemColumns));
+  }, [jobItemColumns]);
+
+  useEffect(() => {
+    localStorage.setItem('rp_staff', JSON.stringify(staff));
+  }, [staff]);
+
+  useEffect(() => {
+    localStorage.setItem('rp_payroll', JSON.stringify(payroll));
+  }, [payroll]);
+
+  useEffect(() => {
+    localStorage.setItem('rp_expenses', JSON.stringify(expenses));
+  }, [expenses]);
+
+  useEffect(() => {
+    localStorage.setItem('rp_recurring_expenses', JSON.stringify(recurringExpenses));
+  }, [recurringExpenses]);
+
+  useEffect(() => {
+    localStorage.setItem('rp_expense_categories', JSON.stringify(expenseCategories));
+  }, [expenseCategories]);
 
   const handleMarkNotificationAsRead = (id: string) => {
     setNotifications(prev => prev.map(n => n.id === id ? { ...n, read: true } : n));
@@ -354,6 +545,11 @@ export default function App() {
   const [highlightQuoteId, setHighlightQuoteId] = useState<string | undefined>(undefined);
   const [highlightEnquiryNumber, setHighlightEnquiryNumber] = useState<string | undefined>(undefined);
   const [adminCatalogSection, setAdminCatalogSection] = useState<'catalog' | 'enquiries' | undefined>(undefined);
+  const [isAdminNavOpen, setIsAdminNavOpen] = useState<boolean>(false);
+
+  const handleAdminNavToggle = () => {
+    setIsAdminNavOpen(prev => !prev);
+  };
 
   const handleSelectNotification = (notif: AppNotification) => {
     const isQuoteNotif =
@@ -403,20 +599,42 @@ export default function App() {
 
   const [appsScriptConfig, setAppsScriptConfig] = useState<AppsScriptConfig>(() => {
     const cached = localStorage.getItem('rp_apps_script_config');
-    let parsedConfig: AppsScriptConfig = cached ? JSON.parse(cached) : { webAppUrl: EMBEDDED_APPS_SCRIPT_URL, isConnected: true };
+    let parsedConfig: AppsScriptConfig | null = null;
+    if (cached) {
+      try {
+        parsedConfig = JSON.parse(cached);
+      } catch {}
+    }
 
     // Check if script URL was passed in query parameters (e.g., ?script=... or ?appsScriptUrl=...)
     const params = new URLSearchParams(window.location.search);
     const urlScript = params.get('script') || params.get('appsScriptUrl') || params.get('webAppUrl');
     const envScript = (((import.meta as any).env?.VITE_APPS_SCRIPT_URL) as string) || '';
 
-    const effectiveUrl = (urlScript && urlScript.trim()) || parsedConfig.webAppUrl || (envScript && envScript.trim()) || EMBEDDED_APPS_SCRIPT_URL;
-    parsedConfig = {
+    // EMBEDDED_APPS_SCRIPT_URL is the canonical source of truth for the active deployment.
+    // Outdated URLs stored in localStorage migrate automatically to the embedded URL,
+    // while query parameter overrides or explicitly entered custom URLs are honored.
+    let effectiveUrl = EMBEDDED_APPS_SCRIPT_URL;
+    if (urlScript && urlScript.trim()) {
+      effectiveUrl = urlScript.trim();
+    } else if (envScript && envScript.trim()) {
+      effectiveUrl = envScript.trim();
+    } else if (parsedConfig?.isCustomUrl && parsedConfig.webAppUrl && parsedConfig.webAppUrl.trim()) {
+      effectiveUrl = parsedConfig.webAppUrl.trim();
+    } else if (EMBEDDED_APPS_SCRIPT_URL && EMBEDDED_APPS_SCRIPT_URL.trim()) {
+      effectiveUrl = EMBEDDED_APPS_SCRIPT_URL.trim();
+    } else if (parsedConfig?.webAppUrl) {
+      effectiveUrl = parsedConfig.webAppUrl.trim();
+    }
+
+    const finalConfig: AppsScriptConfig = {
       webAppUrl: effectiveUrl.trim(),
-      isConnected: true
+      isConnected: true,
+      isCustomUrl: parsedConfig?.isCustomUrl || false,
+      lastSyncTime: parsedConfig?.lastSyncTime
     };
-    localStorage.setItem('rp_apps_script_config', JSON.stringify(parsedConfig));
-    return parsedConfig;
+    localStorage.setItem('rp_apps_script_config', JSON.stringify(finalConfig));
+    return finalConfig;
   });
 
   const [systemSettings, setSystemSettings] = useState<SystemSettings>(() => {
@@ -444,6 +662,10 @@ export default function App() {
       colorTheme: parsed.colorTheme || 'classic_noir',
       adminEmail: (parsed.adminEmail && parsed.adminEmail.trim() !== '') ? parsed.adminEmail : 'regie.yoonet@gmail.com',
       logoUrl: parsed.logoUrl || '',
+      faviconUrl: parsed.faviconUrl || '',
+      companyTagline: parsed.companyTagline !== undefined ? parsed.companyTagline : '',
+      companyAddress: parsed.companyAddress !== undefined ? parsed.companyAddress : '',
+      taxId: parsed.taxId !== undefined ? parsed.taxId : '',
       adminUsername,
       adminPasscode
     };
@@ -515,6 +737,20 @@ export default function App() {
     }
     localStorage.setItem('rp_system_settings', JSON.stringify(settingsToStore));
   }, [systemSettings]);
+
+  // Dynamically update browser tab favicon across devices
+  useEffect(() => {
+    const faviconHref = systemSettings.faviconUrl || systemSettings.logoUrl;
+    if (faviconHref) {
+      let link: HTMLLinkElement | null = document.querySelector("link[rel~='icon']");
+      if (!link) {
+        link = document.createElement('link');
+        link.rel = 'icon';
+        document.head.appendChild(link);
+      }
+      link.href = faviconHref;
+    }
+  }, [systemSettings.faviconUrl, systemSettings.logoUrl]);
 
   useEffect(() => {
     localStorage.setItem('rp_companies', JSON.stringify(companies));
@@ -860,6 +1096,14 @@ export default function App() {
         let fetchedCatalogProducts = allData?.catalogProducts ?? null;
         let fetchedPortals = allData?.portals ?? null;
         let fetchedNotifications = allData?.notifications ?? null;
+        let fetchedJobs = allData?.jobs ?? null;
+        let fetchedJobColumns = allData?.jobColumns ?? null;
+        let fetchedJobItemColumns = allData?.jobItemColumns ?? null;
+        let fetchedStaff = allData?.staff ?? null;
+        let fetchedPayroll = allData?.payroll ?? null;
+        let fetchedExpenses = allData?.expenses ?? null;
+        let fetchedExpenseCategories = allData?.expenseCategories ?? null;
+        let fetchedRecurringExpenses = allData?.recurringExpenses ?? null;
 
         // Fallback to parallel fetches if bulk endpoint was not available or empty
         if (!allData) {
@@ -871,7 +1115,15 @@ export default function App() {
             fetchedQuotes,
             fetchedCatalogProducts,
             fetchedPortals,
-            fetchedNotifications
+            fetchedNotifications,
+            fetchedJobs,
+            fetchedJobColumns,
+            fetchedJobItemColumns,
+            fetchedStaff,
+            fetchedPayroll,
+            fetchedExpenses,
+            fetchedExpenseCategories,
+            fetchedRecurringExpenses
           ] = await Promise.all([
             sheetsService.fetchProducts(url).catch(() => null),
             sheetsService.fetchCompanies(url).catch(() => null),
@@ -880,7 +1132,15 @@ export default function App() {
             sheetsService.fetchQuoteEnquiries(url).catch(() => null),
             sheetsService.fetchCatalogProducts(url).catch(() => null),
             sheetsService.fetchPortals(url).catch(() => null),
-            sheetsService.fetchNotifications(url).catch(() => null)
+            sheetsService.fetchNotifications(url).catch(() => null),
+            sheetsService.fetchJobs(url).catch(() => null),
+            sheetsService.fetchJobColumns(url).catch(() => null),
+            sheetsService.fetchJobItemColumns(url).catch(() => null),
+            sheetsService.fetchStaff(url).catch(() => null),
+            sheetsService.fetchPayroll(url).catch(() => null),
+            sheetsService.fetchExpenses(url).catch(() => null),
+            sheetsService.fetchExpenseCategories(url).catch(() => null),
+            sheetsService.fetchRecurringExpenses(url).catch(() => null)
           ]);
         }
 
@@ -980,16 +1240,58 @@ export default function App() {
             ? fetchedSettings.adminPasscode.trim()
             : (systemSettings.adminPasscode || 'admin123');
 
-          setSystemSettings({
-            hubName: fetchedSettings.hubName || 'ARH Print Hub',
-            shortHubName: fetchedSettings.shortHubName || 'ARH',
-            orderPrefix: fetchedSettings.orderPrefix || 'ARH-2026',
-            currencySymbol: fetchedSettings.currencySymbol || 'Php',
-            colorTheme: fetchedSettings.colorTheme || 'classic_noir',
-            adminEmail: fetchedSettings.adminEmail || '',
-            logoUrl: fetchedSettings.logoUrl || '',
-            adminUsername: currentAdminUser,
-            adminPasscode: currentAdminPass
+          setSystemSettings(prev => {
+            const nextTagline = (fetchedSettings.companyTagline !== undefined && fetchedSettings.companyTagline.trim() !== '')
+              ? fetchedSettings.companyTagline
+              : (prev.companyTagline || '');
+            const nextAddress = (fetchedSettings.companyAddress !== undefined && fetchedSettings.companyAddress.trim() !== '')
+              ? fetchedSettings.companyAddress
+              : (prev.companyAddress || '');
+            const nextTaxId = (fetchedSettings.taxId !== undefined && fetchedSettings.taxId.trim() !== '')
+              ? fetchedSettings.taxId
+              : (prev.taxId || '');
+            const nextHubName = (fetchedSettings.hubName && fetchedSettings.hubName.trim() !== '') ? fetchedSettings.hubName : (prev.hubName || 'ARH Print Hub');
+            const nextShortHubName = (fetchedSettings.shortHubName && fetchedSettings.shortHubName.trim() !== '') ? fetchedSettings.shortHubName : (prev.shortHubName || 'ARH');
+            const nextOrderPrefix = (fetchedSettings.orderPrefix && fetchedSettings.orderPrefix.trim() !== '') ? fetchedSettings.orderPrefix : (prev.orderPrefix || 'ARH-2026');
+            const nextCurrencySymbol = (fetchedSettings.currencySymbol && fetchedSettings.currencySymbol.trim() !== '') ? fetchedSettings.currencySymbol : (prev.currencySymbol || 'Php');
+            const nextColorTheme = fetchedSettings.colorTheme || prev.colorTheme || 'classic_noir';
+            const nextAdminEmail = (fetchedSettings.adminEmail !== undefined && fetchedSettings.adminEmail.trim() !== '') ? fetchedSettings.adminEmail : (prev.adminEmail || '');
+            const nextLogoUrl = (fetchedSettings.logoUrl !== undefined && fetchedSettings.logoUrl.trim() !== '') ? fetchedSettings.logoUrl : (prev.logoUrl || '');
+            const nextFaviconUrl = (fetchedSettings.faviconUrl !== undefined && fetchedSettings.faviconUrl.trim() !== '') ? fetchedSettings.faviconUrl : (prev.faviconUrl || '');
+
+            if (
+              prev.hubName === nextHubName &&
+              prev.shortHubName === nextShortHubName &&
+              prev.orderPrefix === nextOrderPrefix &&
+              prev.currencySymbol === nextCurrencySymbol &&
+              prev.colorTheme === nextColorTheme &&
+              prev.adminEmail === nextAdminEmail &&
+              prev.logoUrl === nextLogoUrl &&
+              prev.faviconUrl === nextFaviconUrl &&
+              prev.companyTagline === nextTagline &&
+              prev.companyAddress === nextAddress &&
+              prev.taxId === nextTaxId &&
+              prev.adminUsername === currentAdminUser &&
+              prev.adminPasscode === currentAdminPass
+            ) {
+              return prev;
+            }
+
+            return {
+              hubName: nextHubName,
+              shortHubName: nextShortHubName,
+              orderPrefix: nextOrderPrefix,
+              currencySymbol: nextCurrencySymbol,
+              colorTheme: nextColorTheme,
+              adminEmail: nextAdminEmail,
+              logoUrl: nextLogoUrl,
+              faviconUrl: nextFaviconUrl,
+              companyTagline: nextTagline,
+              companyAddress: nextAddress,
+              taxId: nextTaxId,
+              adminUsername: currentAdminUser,
+              adminPasscode: currentAdminPass
+            };
           });
         }
 
@@ -1048,6 +1350,232 @@ export default function App() {
             return Array.from(notifMap.values()).sort(
               (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
             );
+          });
+        }
+
+        // 9. Process jobs & columns (Google Sheets is the authoritative persistent source of truth)
+        if (fetchedJobs !== null && Array.isArray(fetchedJobs)) {
+          setJobs(prevJobs => {
+            const fetchedMap = new Map(fetchedJobs.map(j => [j.id, j]));
+            const fetchedIds = new Set(fetchedJobs.map(j => j.id));
+            const now = Date.now();
+
+            // Check if any existing local job has in-progress edits or recent local updates (< 20s)
+            // that are newer than the fetched server snapshot. If so, preserve local data so typing is never interrupted!
+            const mergedExisting = prevJobs.map(localJob => {
+              const serverJob = fetchedMap.get(localJob.id);
+              if (!serverJob) return localJob;
+
+              const localUpdated = new Date(localJob.updatedAt || 0).getTime();
+              const serverUpdated = new Date(serverJob.updatedAt || 0).getTime();
+              const isRecentLocalEdit = (!isNaN(localUpdated) && (now - localUpdated < 20000) && localUpdated > serverUpdated);
+
+              if (isRecentLocalEdit) {
+                return localJob;
+              }
+              return serverJob;
+            });
+
+            // Find brand new server jobs not present in local state
+            const prevIds = new Set(prevJobs.map(j => j.id));
+            const newServerJobs = fetchedJobs.filter(j => !prevIds.has(j.id));
+
+            // Only retain local jobs that haven't reached server yet if created within 60s
+            const activeExistingJobs = mergedExisting.filter(j => {
+              if (fetchedIds.has(j.id)) return true;
+              const createdTimestamp = new Date(j.createdAt || 0).getTime();
+              return !isNaN(createdTimestamp) && (now - createdTimestamp < 60000);
+            });
+
+            const merged = [...activeExistingJobs, ...newServerJobs];
+            // Deduplicate by ID
+            const seen = new Set<string>();
+            const deduplicated = merged.filter(j => {
+              if (seen.has(j.id)) return false;
+              seen.add(j.id);
+              return true;
+            });
+
+            return deduplicated.sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
+          });
+        }
+
+        if (fetchedJobColumns !== null && Array.isArray(fetchedJobColumns)) {
+          if (fetchedJobColumns.length > 0) {
+            const map = new Map<string, JobColumn>();
+            for (const col of fetchedJobColumns) {
+              if (col && col.id) map.set(col.id, col);
+            }
+            const deduped = Array.from(map.values());
+            setJobColumns(deduped);
+
+            // Auto-clean historical duplicate rows in connected sheet on initial sync if duplicates were present
+            if (appsScriptConfig.isConnected && appsScriptConfig.webAppUrl && !hasCleanedUpHistoricalColumnsRef.current) {
+              hasCleanedUpHistoricalColumnsRef.current = true;
+              sheetsService.cleanDuplicateColumns(appsScriptConfig.webAppUrl);
+            }
+          } else if (appsScriptConfig.isConnected && appsScriptConfig.webAppUrl) {
+            // Sheet is connected but JobColumns table has no data rows: seed default column schema into Google Sheets
+            sheetsService.saveJobColumns(appsScriptConfig.webAppUrl, DEFAULT_JOB_COLUMNS);
+          }
+        }
+
+        if (fetchedJobItemColumns !== null && Array.isArray(fetchedJobItemColumns)) {
+          if (fetchedJobItemColumns.length > 0) {
+            const map = new Map<string, JobItemColumn>();
+            for (const col of fetchedJobItemColumns) {
+              if (col && col.id) map.set(col.id, col);
+            }
+            const deduped = Array.from(map.values());
+            setJobItemColumns(deduped);
+          } else if (appsScriptConfig.isConnected && appsScriptConfig.webAppUrl) {
+            // Sheet is connected but JobItemColumns table has no data rows: seed default item column schema into Google Sheets
+            sheetsService.saveJobItemColumns(appsScriptConfig.webAppUrl, DEFAULT_JOB_ITEM_COLUMNS);
+          }
+        }
+
+        // Process staff
+        if (fetchedStaff !== null && Array.isArray(fetchedStaff)) {
+          setStaff(prevStaff => {
+            const fetchedMap = new Map(fetchedStaff.map(s => [s.id, s]));
+            const fetchedIds = new Set(fetchedStaff.map(s => s.id));
+            const now = Date.now();
+            const mergedExisting = prevStaff.map(localStaff => {
+              const serverStaff = fetchedMap.get(localStaff.id);
+              if (!serverStaff) return localStaff;
+              const localUpdated = new Date(localStaff.updatedAt || 0).getTime();
+              const serverUpdated = new Date(serverStaff.updatedAt || 0).getTime();
+              if (!isNaN(localUpdated) && (now - localUpdated < 20000) && localUpdated > serverUpdated) {
+                return localStaff;
+              }
+              return serverStaff;
+            });
+            const prevIds = new Set(prevStaff.map(s => s.id));
+            const newServerStaff = fetchedStaff.filter(s => !prevIds.has(s.id));
+            const activeExisting = mergedExisting.filter(s => {
+              if (fetchedIds.has(s.id)) return true;
+              const createdTimestamp = new Date(s.createdAt || 0).getTime();
+              return !isNaN(createdTimestamp) && (now - createdTimestamp < 60000);
+            });
+            const merged = [...activeExisting, ...newServerStaff];
+            const seen = new Set<string>();
+            return merged.filter(s => {
+              if (seen.has(s.id)) return false;
+              seen.add(s.id);
+              return true;
+            });
+          });
+        }
+
+        // Process payroll
+        if (fetchedPayroll !== null && Array.isArray(fetchedPayroll)) {
+          setPayroll(prevPayroll => {
+            const fetchedMap = new Map(fetchedPayroll.map(p => [p.id, p]));
+            const fetchedIds = new Set(fetchedPayroll.map(p => p.id));
+            const now = Date.now();
+            const mergedExisting = prevPayroll.map(localPayroll => {
+              const serverPayroll = fetchedMap.get(localPayroll.id);
+              if (!serverPayroll) return localPayroll;
+              const localUpdated = new Date(localPayroll.updatedAt || 0).getTime();
+              const serverUpdated = new Date(serverPayroll.updatedAt || 0).getTime();
+              if (!isNaN(localUpdated) && (now - localUpdated < 20000) && localUpdated > serverUpdated) {
+                return localPayroll;
+              }
+              return serverPayroll;
+            });
+            const prevIds = new Set(prevPayroll.map(p => p.id));
+            const newServerPayroll = fetchedPayroll.filter(p => !prevIds.has(p.id));
+            const activeExisting = mergedExisting.filter(p => {
+              if (fetchedIds.has(p.id)) return true;
+              const createdTimestamp = new Date(p.createdAt || 0).getTime();
+              return !isNaN(createdTimestamp) && (now - createdTimestamp < 60000);
+            });
+            const merged = [...activeExisting, ...newServerPayroll];
+            const seen = new Set<string>();
+            return merged.filter(p => {
+              if (seen.has(p.id)) return false;
+              seen.add(p.id);
+              return true;
+            });
+          });
+        }
+
+        // Process expenses
+        if (fetchedExpenses !== null && Array.isArray(fetchedExpenses)) {
+          setExpenses(prevExpenses => {
+            const fetchedMap = new Map(fetchedExpenses.map(e => [e.id, e]));
+            const fetchedIds = new Set(fetchedExpenses.map(e => e.id));
+            const now = Date.now();
+            const mergedExisting = prevExpenses.map(localExp => {
+              const serverExp = fetchedMap.get(localExp.id);
+              if (!serverExp) return localExp;
+              const localUpdated = new Date(localExp.updatedAt || 0).getTime();
+              const serverUpdated = new Date(serverExp.updatedAt || 0).getTime();
+              if (!isNaN(localUpdated) && (now - localUpdated < 20000) && localUpdated > serverUpdated) {
+                return localExp;
+              }
+              return serverExp;
+            });
+            const prevIds = new Set(prevExpenses.map(e => e.id));
+            const newServerExpenses = fetchedExpenses.filter(e => !prevIds.has(e.id));
+            const activeExisting = mergedExisting.filter(e => {
+              if (fetchedIds.has(e.id)) return true;
+              const createdTimestamp = new Date(e.createdAt || 0).getTime();
+              return !isNaN(createdTimestamp) && (now - createdTimestamp < 60000);
+            });
+            const merged = [...activeExisting, ...newServerExpenses];
+            const seen = new Set<string>();
+            return merged.filter(e => {
+              if (seen.has(e.id)) return false;
+              seen.add(e.id);
+              return true;
+            });
+          });
+        }
+
+        // Process expense categories
+        if (fetchedExpenseCategories !== null && Array.isArray(fetchedExpenseCategories)) {
+          if (fetchedExpenseCategories.length > 0) {
+            const catMap = new Map<string, ExpenseCategory>();
+            for (const cat of fetchedExpenseCategories) {
+              if (cat && cat.id) catMap.set(cat.id, cat);
+            }
+            setExpenseCategories(Array.from(catMap.values()));
+          } else if (appsScriptConfig.isConnected && appsScriptConfig.webAppUrl) {
+            sheetsService.saveExpenseCategories(appsScriptConfig.webAppUrl, DEFAULT_EXPENSE_CATEGORIES);
+          }
+        }
+
+        // Process recurring expenses
+        if (fetchedRecurringExpenses !== null && Array.isArray(fetchedRecurringExpenses)) {
+          setRecurringExpenses(prevRules => {
+            const fetchedMap = new Map(fetchedRecurringExpenses.map(r => [r.id, r]));
+            const fetchedIds = new Set(fetchedRecurringExpenses.map(r => r.id));
+            const now = Date.now();
+            const mergedExisting = prevRules.map(localRule => {
+              const serverRule = fetchedMap.get(localRule.id);
+              if (!serverRule) return localRule;
+              const localUpdated = new Date(localRule.updatedAt || 0).getTime();
+              const serverUpdated = new Date(serverRule.updatedAt || 0).getTime();
+              if (!isNaN(localUpdated) && (now - localUpdated < 20000) && localUpdated > serverUpdated) {
+                return localRule;
+              }
+              return serverRule;
+            });
+            const prevIds = new Set(prevRules.map(r => r.id));
+            const newServerRules = fetchedRecurringExpenses.filter(r => !prevIds.has(r.id));
+            const activeExisting = mergedExisting.filter(r => {
+              if (fetchedIds.has(r.id)) return true;
+              const createdTimestamp = new Date(r.createdAt || 0).getTime();
+              return !isNaN(createdTimestamp) && (now - createdTimestamp < 60000);
+            });
+            const merged = [...activeExisting, ...newServerRules];
+            const seen = new Set<string>();
+            return merged.filter(r => {
+              if (seen.has(r.id)) return false;
+              seen.add(r.id);
+              return true;
+            });
           });
         }
 
@@ -1111,7 +1639,13 @@ export default function App() {
   };
 
   const handleUpdateConfig = (newConfig: AppsScriptConfig) => {
-    setAppsScriptConfig(newConfig);
+    const isCustom = Boolean(newConfig.webAppUrl && newConfig.webAppUrl.trim() !== EMBEDDED_APPS_SCRIPT_URL.trim());
+    const updated: AppsScriptConfig = {
+      ...newConfig,
+      isCustomUrl: isCustom
+    };
+    setAppsScriptConfig(updated);
+    localStorage.setItem('rp_apps_script_config', JSON.stringify(updated));
   };
 
   const handleAddCompany = (newCo: CompanyProfile) => {
@@ -1246,6 +1780,21 @@ export default function App() {
       }
     }
 
+    // Also synchronize any linked Job's status
+    for (const newOrd of newOrders) {
+      const oldOrd = orders.find(o => o.id === newOrd.id);
+      if (oldOrd && oldOrd.status !== newOrd.status) {
+        const linkedJob = jobs.find(j => j.orderId === newOrd.id || (j.orderNumber && newOrd.orderNumber && j.orderNumber === newOrd.orderNumber));
+        if (linkedJob && linkedJob.status !== newOrd.status) {
+          const updatedJobStatus = newOrd.status as JobStatus;
+          setJobs(prev => prev.map(j => j.id === linkedJob.id ? { ...j, status: updatedJobStatus, updatedAt: new Date().toISOString() } : j));
+          if (appsScriptConfig.isConnected && appsScriptConfig.webAppUrl) {
+            sheetsService.updateJobStatus(appsScriptConfig.webAppUrl, linkedJob.id, updatedJobStatus).catch(err => console.warn('Job status sync notice:', err));
+          }
+        }
+      }
+    }
+
     // 1. Update React state immediately for instant feedback and localStorage persistence
     setOrders(newOrders);
 
@@ -1271,6 +1820,278 @@ export default function App() {
         }
       }
     }
+  };
+
+  // Job Management Handlers
+  const handleSaveJob = (job: Job, immediate: boolean = false) => {
+    const updatedJob: Job = {
+      ...job,
+      updatedAt: job.updatedAt || new Date().toISOString()
+    };
+
+    setJobs(prev => {
+      const exists = prev.some(j => j.id === updatedJob.id);
+      if (exists) {
+        return prev.map(j => j.id === updatedJob.id ? updatedJob : j);
+      }
+      return [updatedJob, ...prev];
+    });
+
+    if (appsScriptConfig.isConnected && appsScriptConfig.webAppUrl) {
+      const url = appsScriptConfig.webAppUrl;
+      const existingTimer = jobSaveDebounceTimers.current.get(updatedJob.id);
+      if (existingTimer) {
+        clearTimeout(existingTimer);
+      }
+
+      if (immediate) {
+        jobSaveDebounceTimers.current.delete(updatedJob.id);
+        sheetsService.saveJob(url, updatedJob).catch(err => console.warn('Job save sync notice:', err));
+      } else {
+        const timer = setTimeout(() => {
+          jobSaveDebounceTimers.current.delete(updatedJob.id);
+          sheetsService.saveJob(url, updatedJob).catch(err => console.warn('Job save sync notice:', err));
+        }, 500);
+        jobSaveDebounceTimers.current.set(updatedJob.id, timer);
+      }
+    }
+
+    // Synchronize linked Order if exists
+    if (updatedJob.orderId) {
+      const linkedOrder = orders.find(o => o.id === updatedJob.orderId || (o.orderNumber && updatedJob.orderNumber && o.orderNumber === updatedJob.orderNumber));
+      if (linkedOrder && linkedOrder.status !== updatedJob.status) {
+        const updatedOrders = orders.map(o => o.id === linkedOrder.id ? { ...o, status: updatedJob.status } : o);
+        handleUpdateOrders(updatedOrders);
+      }
+    }
+  };
+
+  const handleUpdateJobStatus = (jobId: string, status: JobStatus) => {
+    let targetJob: Job | undefined;
+    setJobs(prev => prev.map(j => {
+      if (j.id === jobId) {
+        targetJob = { ...j, status, updatedAt: new Date().toISOString() };
+        return targetJob;
+      }
+      return j;
+    }));
+
+    if (appsScriptConfig.isConnected && appsScriptConfig.webAppUrl) {
+      sheetsService.updateJobStatus(appsScriptConfig.webAppUrl, jobId, status);
+    }
+
+    // Synchronize linked Order if exists
+    if (targetJob && (targetJob.orderId || targetJob.orderNumber)) {
+      const linkedOrder = orders.find(o => o.id === targetJob!.orderId || (o.orderNumber && targetJob!.orderNumber && o.orderNumber === targetJob!.orderNumber));
+      if (linkedOrder && linkedOrder.status !== status) {
+        const updatedOrders = orders.map(o => o.id === linkedOrder.id ? { ...o, status } : o);
+        handleUpdateOrders(updatedOrders);
+      }
+    }
+  };
+
+  const handleDeleteJob = (jobId: string) => {
+    const existingTimer = jobSaveDebounceTimers.current.get(jobId);
+    if (existingTimer) {
+      clearTimeout(existingTimer);
+      jobSaveDebounceTimers.current.delete(jobId);
+    }
+    setJobs(prev => prev.filter(j => j.id !== jobId));
+    if (appsScriptConfig.isConnected && appsScriptConfig.webAppUrl) {
+      sheetsService.deleteJob(appsScriptConfig.webAppUrl, jobId);
+    }
+  };
+
+  const handleSaveJobsBatch = (newJobs: Job[]) => {
+    setJobs(newJobs);
+    if (appsScriptConfig.isConnected && appsScriptConfig.webAppUrl) {
+      const url = appsScriptConfig.webAppUrl;
+      jobs.forEach(oldJ => {
+        if (!newJobs.some(j => j.id === oldJ.id)) {
+          sheetsService.deleteJob(url, oldJ.id);
+        }
+      });
+      newJobs.forEach(j => {
+        sheetsService.saveJob(url, j);
+      });
+    }
+  };
+
+  const handleSaveJobColumns = (columns: JobColumn[]) => {
+    const map = new Map<string, JobColumn>();
+    for (const c of (columns || [])) {
+      if (c && c.id) map.set(c.id, c);
+    }
+    const deduped = Array.from(map.values());
+    setJobColumns(deduped);
+    if (appsScriptConfig.isConnected && appsScriptConfig.webAppUrl) {
+      sheetsService.saveJobColumns(appsScriptConfig.webAppUrl, deduped);
+    }
+  };
+
+  const handleSaveJobItemColumns = (columns: JobItemColumn[]) => {
+    const map = new Map<string, JobItemColumn>();
+    for (const c of (columns || [])) {
+      if (c && c.id) map.set(c.id, c);
+    }
+    const deduped = Array.from(map.values());
+    setJobItemColumns(deduped);
+    if (appsScriptConfig.isConnected && appsScriptConfig.webAppUrl) {
+      sheetsService.saveJobItemColumns(appsScriptConfig.webAppUrl, deduped);
+    }
+  };
+
+  // Staff Management Handlers
+  const handleSaveStaff = (member: StaffMember) => {
+    const updated: StaffMember = {
+      ...member,
+      updatedAt: new Date().toISOString()
+    };
+    setStaff(prev => {
+      const exists = prev.some(s => s.id === updated.id);
+      if (exists) {
+        return prev.map(s => s.id === updated.id ? updated : s);
+      }
+      return [updated, ...prev];
+    });
+    if (appsScriptConfig.isConnected && appsScriptConfig.webAppUrl) {
+      sheetsService.saveStaff(appsScriptConfig.webAppUrl, updated).catch(err => console.warn('Save staff sync notice:', err));
+    }
+  };
+
+  const handleSaveStaffBatch = (staffList: StaffMember[]) => {
+    setStaff(staffList);
+    if (appsScriptConfig.isConnected && appsScriptConfig.webAppUrl) {
+      sheetsService.saveStaffBatch(appsScriptConfig.webAppUrl, staffList).catch(err => console.warn('Save staff batch sync notice:', err));
+    }
+  };
+
+  const handleDeleteStaff = (staffId: string) => {
+    setStaff(prev => prev.filter(s => s.id !== staffId));
+    if (appsScriptConfig.isConnected && appsScriptConfig.webAppUrl) {
+      sheetsService.deleteStaff(appsScriptConfig.webAppUrl, staffId).catch(err => console.warn('Delete staff sync notice:', err));
+    }
+  };
+
+  // Payroll Management Handlers
+  const handleSavePayroll = (record: PayrollRecord) => {
+    const updated: PayrollRecord = {
+      ...record,
+      updatedAt: new Date().toISOString()
+    };
+    setPayroll(prev => {
+      const exists = prev.some(p => p.id === updated.id);
+      if (exists) {
+        return prev.map(p => p.id === updated.id ? updated : p);
+      }
+      return [updated, ...prev];
+    });
+    if (appsScriptConfig.isConnected && appsScriptConfig.webAppUrl) {
+      sheetsService.savePayroll(appsScriptConfig.webAppUrl, updated).catch(err => console.warn('Save payroll sync notice:', err));
+    }
+  };
+
+  const handleSavePayrollBatch = (records: PayrollRecord[]) => {
+    setPayroll(records);
+    if (appsScriptConfig.isConnected && appsScriptConfig.webAppUrl) {
+      sheetsService.savePayrollBatch(appsScriptConfig.webAppUrl, records).catch(err => console.warn('Save payroll batch sync notice:', err));
+    }
+  };
+
+  const handleDeletePayroll = (payrollId: string) => {
+    setPayroll(prev => prev.filter(p => p.id !== payrollId));
+    if (appsScriptConfig.isConnected && appsScriptConfig.webAppUrl) {
+      sheetsService.deletePayroll(appsScriptConfig.webAppUrl, payrollId).catch(err => console.warn('Delete payroll sync notice:', err));
+    }
+  };
+
+  // Expense Management Handlers
+  const handleSaveExpense = (expense: ExpenseRecord) => {
+    const updated: ExpenseRecord = {
+      ...expense,
+      updatedAt: new Date().toISOString()
+    };
+    setExpenses(prev => {
+      const exists = prev.some(e => e.id === updated.id);
+      if (exists) {
+        return prev.map(e => e.id === updated.id ? updated : e);
+      }
+      return [updated, ...prev];
+    });
+    if (appsScriptConfig.isConnected && appsScriptConfig.webAppUrl) {
+      sheetsService.saveExpense(appsScriptConfig.webAppUrl, updated).catch(err => console.warn('Save expense sync notice:', err));
+    }
+  };
+
+  const handleSaveExpensesBatch = (expensesList: ExpenseRecord[]) => {
+    setExpenses(expensesList);
+    if (appsScriptConfig.isConnected && appsScriptConfig.webAppUrl) {
+      sheetsService.saveExpensesBatch(appsScriptConfig.webAppUrl, expensesList).catch(err => console.warn('Save expenses batch sync notice:', err));
+    }
+  };
+
+  const handleDeleteExpense = (expenseId: string) => {
+    setExpenses(prev => prev.filter(e => e.id !== expenseId));
+    if (appsScriptConfig.isConnected && appsScriptConfig.webAppUrl) {
+      sheetsService.deleteExpense(appsScriptConfig.webAppUrl, expenseId).catch(err => console.warn('Delete expense sync notice:', err));
+    }
+  };
+
+  // Recurring Expense & Category Handlers
+  const handleSaveRecurringExpense = (rule: RecurringExpenseRule) => {
+    const updated: RecurringExpenseRule = {
+      ...rule,
+      updatedAt: new Date().toISOString()
+    };
+    setRecurringExpenses(prev => {
+      const exists = prev.some(r => r.id === updated.id);
+      if (exists) {
+        return prev.map(r => r.id === updated.id ? updated : r);
+      }
+      return [updated, ...prev];
+    });
+    if (appsScriptConfig.isConnected && appsScriptConfig.webAppUrl) {
+      sheetsService.saveRecurringExpense(appsScriptConfig.webAppUrl, updated).catch(err => console.warn('Save recurring expense sync notice:', err));
+    }
+  };
+
+  const handleSaveRecurringExpensesBatch = (rulesList: RecurringExpenseRule[]) => {
+    setRecurringExpenses(rulesList);
+    if (appsScriptConfig.isConnected && appsScriptConfig.webAppUrl) {
+      sheetsService.saveRecurringExpensesBatch(appsScriptConfig.webAppUrl, rulesList).catch(err => console.warn('Save recurring expenses batch sync notice:', err));
+    }
+  };
+
+  const handleDeleteRecurringExpense = (ruleId: string) => {
+    setRecurringExpenses(prev => prev.filter(r => r.id !== ruleId));
+    if (appsScriptConfig.isConnected && appsScriptConfig.webAppUrl) {
+      sheetsService.deleteRecurringExpense(appsScriptConfig.webAppUrl, ruleId).catch(err => console.warn('Delete recurring expense sync notice:', err));
+    }
+  };
+
+  const handleSaveExpenseCategories = (categories: ExpenseCategory[]) => {
+    setExpenseCategories(categories);
+    if (appsScriptConfig.isConnected && appsScriptConfig.webAppUrl) {
+      sheetsService.saveExpenseCategories(appsScriptConfig.webAppUrl, categories).catch(err => console.warn('Save expense categories sync notice:', err));
+    }
+  };
+
+  const handleCreateJobFromOrder = (order: Order) => {
+    const existingJob = jobs.find(j => j.orderId === order.id || (j.orderNumber && order.orderNumber && j.orderNumber === order.orderNumber));
+    if (existingJob) {
+      setActiveTab('admin');
+      setHighlightJobId(existingJob.id);
+      return;
+    }
+
+    const newJob = createJobFromOrder(order, jobs);
+    setJobs(prev => [newJob, ...prev]);
+    if (appsScriptConfig.isConnected && appsScriptConfig.webAppUrl) {
+      sheetsService.saveJob(appsScriptConfig.webAppUrl, newJob);
+    }
+
+    setActiveTab('admin');
+    setHighlightJobId(newJob.id);
   };
 
   const handleUpdateSystemSettings = (newSettings: SystemSettings) => {
@@ -1351,6 +2172,36 @@ export default function App() {
       // 7. Sync order portals
       for (const portal of orderPortals) {
         await sheetsService.savePortal(url, portal);
+      }
+      // 8. Sync jobs & custom job columns
+      for (const job of jobs) {
+        await sheetsService.saveJob(url, job);
+      }
+      if (jobColumns && jobColumns.length > 0) {
+        await sheetsService.saveJobColumns(url, jobColumns);
+      }
+      if (jobItemColumns && jobItemColumns.length > 0) {
+        await sheetsService.saveJobItemColumns(url, jobItemColumns);
+      }
+      // 9. Sync staff members
+      if (staff && staff.length > 0) {
+        await sheetsService.saveStaffBatch(url, staff);
+      }
+      // 10. Sync payroll records
+      if (payroll && payroll.length > 0) {
+        await sheetsService.savePayrollBatch(url, payroll);
+      }
+      // 11. Sync expenses
+      if (expenses && expenses.length > 0) {
+        await sheetsService.saveExpensesBatch(url, expenses);
+      }
+      // 12. Sync expense categories
+      if (expenseCategories && expenseCategories.length > 0) {
+        await sheetsService.saveExpenseCategories(url, expenseCategories);
+      }
+      // 13. Sync recurring expense rules
+      if (recurringExpenses && recurringExpenses.length > 0) {
+        await sheetsService.saveRecurringExpensesBatch(url, recurringExpenses);
       }
       return true;
     } catch (e) {
@@ -1724,7 +2575,9 @@ export default function App() {
           quantity: Number(pastItem.quantity) || 1,
           selectedSize: pastItem.selectedSize,
           selectedColor: pastItem.selectedColor,
-          customDetails: pastItem.customDetails || {}
+          selectedAddOns: pastItem.selectedAddOns,
+          customDetails: pastItem.customDetails || {},
+          unitPrice: pastItem.price ?? pastItem.unitPrice ?? getProductUnitPrice(catalogProduct, pastItem.selectedSize, pastItem.selectedColor)
         });
       }
     });
@@ -2303,10 +3156,35 @@ export default function App() {
         onMarkAllNotificationsAsRead={handleMarkAllNotificationsAsRead}
         onClearNotifications={handleClearNotifications}
         onSelectNotification={handleSelectNotification}
+        onMobileNavToggle={handleAdminNavToggle}
       />
 
+      {/* Universal Slide-in Navigation Drawer for Client & Non-Admin Views */}
+      {activeTab !== 'admin' && activeTab !== 'sync' && (
+        <NavigationDrawer
+          isOpen={isAdminNavOpen}
+          onClose={() => setIsAdminNavOpen(false)}
+          company={activeCompany}
+          systemSettings={systemSettings}
+          userRole={loggedInUser.role}
+          activeTab={activeTab}
+          onSelectTab={(tab) => {
+            setActiveTab(tab);
+            setIsAdminNavOpen(false);
+          }}
+          counts={{
+            catalog: scopedProducts.length,
+            browse: catalogProducts.length,
+            portals: orderPortals.filter(p => p.companyId === activeCompany.id).length,
+            history: orders.filter(o => o.companyName?.toLowerCase() === activeCompany.name?.toLowerCase()).length,
+            quotes: quoteEnquiries.filter(q => q.companyName?.toLowerCase() === activeCompany.name?.toLowerCase()).length
+          }}
+          onLogout={handleLogout}
+        />
+      )}
+
       {/* Main App Workspace Stage */}
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 py-8 sm:px-8">
+      <main className={`flex-1 w-full mx-auto px-4 py-8 sm:px-8 ${activeTab === 'admin' || activeTab === 'sync' ? 'max-w-[1600px]' : 'max-w-7xl'}`}>
         <AnimatePresence mode="wait">
           <motion.div
             key={activeTab}
@@ -2322,6 +3200,35 @@ export default function App() {
                 orders={orders}
                 catalogProducts={catalogProducts}
                 quoteEnquiries={quoteEnquiries}
+                jobs={jobs}
+                jobColumns={jobColumns}
+                jobItemColumns={jobItemColumns}
+                onSaveJob={handleSaveJob}
+                onUpdateJobStatus={handleUpdateJobStatus}
+                onDeleteJob={handleDeleteJob}
+                onSaveJobsBatch={handleSaveJobsBatch}
+                onSaveJobColumns={handleSaveJobColumns}
+                onSaveJobItemColumns={handleSaveJobItemColumns}
+                onCreateJobFromOrder={handleCreateJobFromOrder}
+                highlightJobId={highlightJobId}
+                staff={staff}
+                payroll={payroll}
+                expenses={expenses}
+                recurringExpenses={recurringExpenses}
+                expenseCategories={expenseCategories}
+                onSaveStaff={handleSaveStaff}
+                onSaveStaffBatch={handleSaveStaffBatch}
+                onDeleteStaff={handleDeleteStaff}
+                onSavePayroll={handleSavePayroll}
+                onSavePayrollBatch={handleSavePayrollBatch}
+                onDeletePayroll={handleDeletePayroll}
+                onSaveExpense={handleSaveExpense}
+                onSaveExpensesBatch={handleSaveExpensesBatch}
+                onDeleteExpense={handleDeleteExpense}
+                onSaveRecurringExpense={handleSaveRecurringExpense}
+                onSaveRecurringExpensesBatch={handleSaveRecurringExpensesBatch}
+                onDeleteRecurringExpense={handleDeleteRecurringExpense}
+                onSaveExpenseCategories={handleSaveExpenseCategories}
                 onAddCatalogProduct={handleAddCatalogProduct}
                 onUpdateCatalogProduct={handleUpdateCatalogProduct}
                 onDeleteCatalogProduct={handleDeleteCatalogProduct}
@@ -2350,6 +3257,9 @@ export default function App() {
                 highlightEnquiryNumber={highlightEnquiryNumber}
                 highlightOrderNumber={highlightOrderNumber}
                 highlightOrderId={highlightOrderId}
+                isMobileNavOpen={isAdminNavOpen}
+                onToggleMobileNav={(open) => setIsAdminNavOpen(typeof open === 'boolean' ? open : !isAdminNavOpen)}
+                onLogout={handleLogout}
               />
             )}
 
@@ -2376,6 +3286,7 @@ export default function App() {
                 portals={orderPortals}
                 activeCompany={activeCompany}
                 availableProducts={scopedProducts}
+                allProducts={products}
                 systemSettings={systemSettings}
                 onCreatePortal={handleCreatePortal}
                 onUpdatePortal={handleUpdatePortal}
@@ -2385,6 +3296,8 @@ export default function App() {
                 orders={orders}
                 onUpdateOrders={handleUpdateOrders}
                 onUpdateOrderStatus={(orderId, status) => handleUpdateOrders(orders.map(o => o.id === orderId ? { ...o, status } : o))}
+                onAddToCartBulk={handleAddToCartBulk}
+                onOpenCart={() => setIsCartOpen(true)}
               />
             )}
 
@@ -2420,18 +3333,6 @@ export default function App() {
           </motion.div>
         </AnimatePresence>
       </main>
-
-      {/* Floating Sign Out Button */}
-      {loggedInUser && (
-        <button
-          onClick={handleLogout}
-          className="fixed bottom-6 right-6 bg-black text-white hover:bg-white hover:text-black border border-black px-4 py-2.5 rounded-full text-xs uppercase font-extrabold tracking-wider transition-all flex items-center gap-2 cursor-pointer shadow-lg z-40 hover:scale-105 active:scale-95"
-          id="floating-logout-btn"
-        >
-          <LogOut className="w-4 h-4 shrink-0" />
-          <span>Sign Out</span>
-        </button>
-      )}
 
       {/* Checkout Side-Panel Drawer */}
       <Cart
