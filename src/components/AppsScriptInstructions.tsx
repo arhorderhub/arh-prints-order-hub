@@ -48,7 +48,10 @@ function doGet(e) {
       jobs: getTableData(sheet, "Jobs"),
       jobColumns: getTableData(sheet, "JobColumns"),
       jobItemColumns: getTableData(sheet, "JobItemColumns"),
+      jobComments: getTableData(sheet, "JobComments"),
       staff: getTableData(sheet, "Staff"),
+      staffAccounts: getTableData(sheet, "StaffAccounts"),
+      attendance: getTableData(sheet, "Attendance"),
       payroll: getTableData(sheet, "Payroll"),
       expenses: getTableData(sheet, "Expenses"),
       expenseCategories: getTableData(sheet, "ExpenseCategories"),
@@ -101,8 +104,20 @@ function doGet(e) {
     return getJsonOutput(getTableData(sheet, "JobItemColumns"));
   }
 
+  if (action === "getJobComments") {
+    return getJsonOutput(getTableData(sheet, "JobComments"));
+  }
+
   if (action === "getStaff") {
     return getJsonOutput(getTableData(sheet, "Staff"));
+  }
+
+  if (action === "getStaffAccounts") {
+    return getJsonOutput(getTableData(sheet, "StaffAccounts"));
+  }
+
+  if (action === "getAttendance") {
+    return getJsonOutput(getTableData(sheet, "Attendance"));
   }
 
   if (action === "getPayroll") {
@@ -235,6 +250,18 @@ function doPost(e) {
     return getJsonOutput(saveJobItemColumns(sheet, payload.columns));
   }
 
+  if (payload.action === "saveJobComment") {
+    return getJsonOutput(saveJobComment(sheet, payload.comment));
+  }
+
+  if (payload.action === "saveJobCommentsBatch") {
+    return getJsonOutput(saveJobCommentsBatch(sheet, payload.comments));
+  }
+
+  if (payload.action === "deleteJobComment") {
+    return getJsonOutput(deleteRowById(sheet, "JobComments", "Comment ID", payload.commentId));
+  }
+
   if (payload.action === "cleanDuplicateColumns") {
     cleanDuplicateColumns(sheet);
     return getJsonOutput({ status: "success", message: "Duplicate columns cleaned" });
@@ -250,6 +277,30 @@ function doPost(e) {
 
   if (payload.action === "deleteStaff") {
     return getJsonOutput(deleteRowById(sheet, "Staff", "Staff ID", payload.staffId));
+  }
+
+  if (payload.action === "saveStaffAccount") {
+    return getJsonOutput(saveStaffAccount(sheet, payload.account));
+  }
+
+  if (payload.action === "saveStaffAccountsBatch") {
+    return getJsonOutput(saveStaffAccountsBatch(sheet, payload.accounts));
+  }
+
+  if (payload.action === "deleteStaffAccount") {
+    return getJsonOutput(deleteRowById(sheet, "StaffAccounts", "Account ID", payload.accountId));
+  }
+
+  if (payload.action === "saveAttendance") {
+    return getJsonOutput(saveAttendance(sheet, payload.record));
+  }
+
+  if (payload.action === "saveAttendanceBatch") {
+    return getJsonOutput(saveAttendanceBatch(sheet, payload.records));
+  }
+
+  if (payload.action === "deleteAttendance") {
+    return getJsonOutput(deleteRowById(sheet, "Attendance", "Attendance ID", payload.attendanceId));
   }
 
   if (payload.action === "savePayroll") {
@@ -377,7 +428,7 @@ function getMapValueByHeader(map, header) {
 }
 
 function initSheets(ss) {
-  var sheets = ["Orders", "OrderItems", "Products", "CatalogProducts", "Companies", "Portals", "Admin", "Quotes", "Notifications", "Jobs", "JobColumns", "JobItemColumns", "Staff", "Payroll", "Expenses", "ExpenseCategories", "RecurringExpenses"];
+  var sheets = ["Orders", "OrderItems", "Products", "CatalogProducts", "Companies", "Portals", "Admin", "Quotes", "Notifications", "Jobs", "JobColumns", "JobItemColumns", "JobComments", "Staff", "StaffAccounts", "Attendance", "Payroll", "Expenses", "ExpenseCategories", "RecurringExpenses"];
   
   // Headers definitions
   var headers = {
@@ -390,10 +441,13 @@ function initSheets(ss) {
     "Admin": ["Hub Name", "Short Hub Name", "Company Tagline", "Company Address", "Tax TIN ID", "Order Prefix", "Currency Symbol", "Admin Username", "Admin Passcode", "Color Theme", "Admin Email", "App Logo URL", "App Favicon URL"],
     "Quotes": ["Enquiry ID", "Enquiry Number", "Product ID", "Product Name", "Product Category", "Company ID", "Company Name", "Contact Person", "Contact Email", "Contact Phone", "Quantity", "Preferred Branding Method", "Preferred Color", "Preferred Size", "Notes", "Status", "Created At", "Quoted Unit Price", "Quoted Total Price", "Quoted Tax", "Quoted Shipping", "Quote Notes", "Quoted Valid Until", "Quoted At", "Quoted Line Items", "Requested Product Addition", "Requested Product Addition At", "Requested Product Notes"],
     "Notifications": ["Notification ID", "Recipient Type", "Company Name", "Title", "Message", "Timestamp", "Read", "Order ID", "Order Number", "Type"],
-    "Jobs": ["Job ID", "Company ID", "Company Name", "Order ID", "Order Number", "Source", "Status", "Position", "Values JSON", "Items JSON", "Activities JSON", "Created At", "Updated At", "Created By"],
+    "Jobs": ["Job ID", "Company ID", "Company Name", "Order ID", "Order Number", "Source", "Status", "Position", "Values JSON", "Items JSON", "Activities JSON", "Comments JSON", "Created At", "Updated At", "Created By"],
     "JobColumns": ["Column ID", "Name", "Type", "Position", "Required", "Is System Field", "Is Hidden", "Options", "Created Date"],
     "JobItemColumns": ["Column ID", "Name", "Type", "Position", "Required", "Is System Field", "Is Hidden", "Calculation", "Options"],
+    "JobComments": ["Comment ID", "Job ID", "User ID", "User Name", "Comment", "Created At", "Updated At"],
     "Staff": ["Staff ID", "Full Name", "Position", "Department", "Employment Status", "Date Started", "Salary Type", "Basic Salary", "Allowances", "Other Compensation", "Notes", "Status", "Created At", "Updated At"],
+    "StaffAccounts": ["Account ID", "Staff ID", "Name", "Username", "Passcode", "Role", "Status", "Email", "Phone", "Avatar URL", "Last Login", "Created At", "Updated At"],
+    "Attendance": ["Attendance ID", "Staff ID", "Staff Name", "Date", "Clock In", "Clock Out", "Total Hours", "Status", "Notes", "Created At", "Updated At"],
     "Payroll": ["Payroll ID", "Staff ID", "Staff Name", "Position", "Department", "Pay Period Start", "Pay Period End", "Pay Date", "Basic Pay", "Allowances", "Other Earnings", "Gross Pay", "Deductions", "Itemized Deductions JSON", "Total Deductions", "Net Pay", "Status", "Notes", "Created At", "Updated At"],
     "Expenses": ["Expense ID", "Expense Name", "Category", "Expense Type", "Amount", "Expense Date", "Payment Status", "Payment Date", "Vendor", "Reference Number", "Notes", "Recurring Expense ID", "Payroll ID", "Created At", "Updated At"],
     "ExpenseCategories": ["Category ID", "Name", "Is System", "Status"],
@@ -1399,6 +1453,11 @@ function saveJob(ss, job) {
     activitiesJsonStr = typeof job.activities === 'string' ? job.activities : JSON.stringify(job.activities);
   }
 
+  var commentsJsonStr = "";
+  if (job.comments) {
+    commentsJsonStr = typeof job.comments === 'string' ? job.comments : JSON.stringify(job.comments);
+  }
+
   var jobMap = {
     "Job ID": targetId,
     "Company ID": job.companyId || "",
@@ -1411,6 +1470,7 @@ function saveJob(ss, job) {
     "Values JSON": valuesJsonStr,
     "Items JSON": itemsJsonStr,
     "Activities JSON": activitiesJsonStr,
+    "Comments JSON": commentsJsonStr,
     "Created At": job.createdAt || new Date().toISOString(),
     "Updated At": job.updatedAt || new Date().toISOString(),
     "Created By": job.createdBy || "Admin"
@@ -1471,6 +1531,63 @@ function updateJobStatus(ss, jobId, status) {
     }
   }
   return { status: "error", message: "Job not found" };
+}
+
+function saveJobComment(ss, comment) {
+  if (!comment) return { status: "error", message: "Invalid comment" };
+  var sheet = ss.getSheetByName("JobComments");
+  var expectedHeaders = ["Comment ID", "Job ID", "User ID", "User Name", "Comment", "Created At", "Updated At"];
+  var data = ensureHeaders(sheet, expectedHeaders);
+  var headers = data[0];
+  
+  var targetId = String(comment.id || ("cmt-" + new Date().getTime()));
+  var idIndex = 0;
+  for (var c = 0; c < headers.length; c++) {
+    var normH = headers[c].toString().toLowerCase().replace(/[^a-z0-9]/g, "");
+    if (normH === "commentid" || normH === "id") {
+      idIndex = c;
+      break;
+    }
+  }
+  
+  var rowIndex = -1;
+  for (var i = 1; i < data.length; i++) {
+    if (String(data[i][idIndex]).trim() === targetId) {
+      rowIndex = i + 1;
+      break;
+    }
+  }
+  
+  var commentMap = {
+    "Comment ID": targetId,
+    "Job ID": comment.jobId || "",
+    "User ID": comment.userId || "",
+    "User Name": comment.userName || "Admin",
+    "Comment": comment.comment || "",
+    "Created At": comment.createdAt || new Date().toISOString(),
+    "Updated At": comment.updatedAt || new Date().toISOString()
+  };
+  
+  var rowData = [];
+  for (var c = 0; c < headers.length; c++) {
+    rowData.push(getMapValueByHeader(commentMap, headers[c]));
+  }
+  
+  if (rowIndex !== -1) {
+    sheet.getRange(rowIndex, 1, 1, rowData.length).setValues([rowData]);
+  } else {
+    sheet.appendRow(rowData);
+  }
+  
+  return { status: "success", commentId: targetId };
+}
+
+function saveJobCommentsBatch(ss, comments) {
+  if (!Array.isArray(comments)) return { status: "error", message: "Invalid array" };
+  comments.forEach(function(c) {
+    saveJobComment(ss, c);
+  });
+  return { status: "success", count: comments.length };
 }
 
 function saveJobColumns(ss, columns) {
@@ -1926,6 +2043,134 @@ function saveRecurringExpensesBatch(ss, rules) {
   return { status: "success", count: rules.length };
 }
 
+function saveStaffAccount(ss, account) {
+  var sheet = ss.getSheetByName("StaffAccounts");
+  var expectedHeaders = ["Account ID", "Staff ID", "Name", "Username", "Passcode", "Role", "Status", "Email", "Phone", "Avatar URL", "Last Login", "Created At", "Updated At"];
+  var data = ensureHeaders(sheet, expectedHeaders);
+  var headers = data[0];
+
+  if (!account) return { status: "error", message: "Missing staff account data" };
+  var targetId = String(account.id || account["Account ID"] || "").trim();
+  if (!targetId) return { status: "error", message: "Missing account ID" };
+
+  var idIndex = 0;
+  for (var c = 0; c < headers.length; c++) {
+    var normH = headers[c].toString().toLowerCase().replace(/[^a-z0-9]/g, "");
+    if (normH === "accountid" || normH === "id") {
+      idIndex = c;
+      break;
+    }
+  }
+
+  var rowIndex = -1;
+  for (var i = 1; i < data.length; i++) {
+    if (String(data[i][idIndex]).trim() === targetId) {
+      rowIndex = i + 1;
+      break;
+    }
+  }
+
+  var accMap = {
+    "Account ID": targetId,
+    "Staff ID": account.staffId || "",
+    "Name": account.name || "",
+    "Username": account.username || "",
+    "Passcode": account.passcode || "",
+    "Role": account.role || "Staff",
+    "Status": account.status || "Active",
+    "Email": account.email || "",
+    "Phone": account.phone || "",
+    "Avatar URL": account.avatarUrl || "",
+    "Last Login": account.lastLogin || "",
+    "Created At": account.createdAt || new Date().toISOString(),
+    "Updated At": account.updatedAt || new Date().toISOString()
+  };
+
+  var row = [];
+  for (var c = 0; c < headers.length; c++) {
+    row.push(getMapValueByHeader(accMap, headers[c]));
+  }
+
+  if (rowIndex !== -1) {
+    sheet.getRange(rowIndex, 1, 1, row.length).setValues([row]);
+  } else {
+    sheet.appendRow(row);
+  }
+
+  return { status: "success", accountId: targetId };
+}
+
+function saveStaffAccountsBatch(ss, accounts) {
+  if (!Array.isArray(accounts)) return { status: "error", message: "Invalid array" };
+  accounts.forEach(function(a) {
+    saveStaffAccount(ss, a);
+  });
+  return { status: "success", count: accounts.length };
+}
+
+function saveAttendance(ss, record) {
+  var sheet = ss.getSheetByName("Attendance");
+  var expectedHeaders = ["Attendance ID", "Staff ID", "Staff Name", "Date", "Clock In", "Clock Out", "Total Hours", "Status", "Notes", "Created At", "Updated At"];
+  var data = ensureHeaders(sheet, expectedHeaders);
+  var headers = data[0];
+
+  if (!record) return { status: "error", message: "Missing attendance data" };
+  var targetId = String(record.id || record["Attendance ID"] || "").trim();
+  if (!targetId) return { status: "error", message: "Missing attendance ID" };
+
+  var idIndex = 0;
+  for (var c = 0; c < headers.length; c++) {
+    var normH = headers[c].toString().toLowerCase().replace(/[^a-z0-9]/g, "");
+    if (normH === "attendanceid" || normH === "id") {
+      idIndex = c;
+      break;
+    }
+  }
+
+  var rowIndex = -1;
+  for (var i = 1; i < data.length; i++) {
+    if (String(data[i][idIndex]).trim() === targetId) {
+      rowIndex = i + 1;
+      break;
+    }
+  }
+
+  var attMap = {
+    "Attendance ID": targetId,
+    "Staff ID": record.staffId || "",
+    "Staff Name": record.staffName || "",
+    "Date": record.date || new Date().toISOString().split("T")[0],
+    "Clock In": record.clockIn || "",
+    "Clock Out": record.clockOut || "",
+    "Total Hours": record.totalHours !== undefined ? Number(record.totalHours) : 0,
+    "Status": record.status || "Present",
+    "Notes": record.notes || "",
+    "Created At": record.createdAt || new Date().toISOString(),
+    "Updated At": record.updatedAt || new Date().toISOString()
+  };
+
+  var row = [];
+  for (var c = 0; c < headers.length; c++) {
+    row.push(getMapValueByHeader(attMap, headers[c]));
+  }
+
+  if (rowIndex !== -1) {
+    sheet.getRange(rowIndex, 1, 1, row.length).setValues([row]);
+  } else {
+    sheet.appendRow(row);
+  }
+
+  return { status: "success", attendanceId: targetId };
+}
+
+function saveAttendanceBatch(ss, records) {
+  if (!Array.isArray(records)) return { status: "error", message: "Invalid array" };
+  records.forEach(function(r) {
+    saveAttendance(ss, r);
+  });
+  return { status: "success", count: records.length };
+}
+
 function getJsonOutput(obj) {
   return ContentService.createTextOutput(JSON.stringify(obj))
     .setMimeType(ContentService.MimeType.JSON);
@@ -2013,7 +2258,7 @@ function getJsonOutput(obj) {
             </h4>
           </div>
           <p className="text-xs text-gray-500 leading-normal font-sans">
-            The Google Apps Script <span className="font-bold text-black">automatically creates</span> these 5 tabs and writes the header rows on its first run. If you wish to inspect or create them manually, here is the exact database schema:
+            The Google Apps Script <span className="font-bold text-black">automatically creates</span> all required tabs and writes the header rows on its first run. If you wish to inspect or create them manually, here is the exact database schema:
           </p>
 
           <div className="space-y-3">
@@ -2309,6 +2554,46 @@ function getJsonOutput(obj) {
                 <span className="block text-[9px] uppercase font-mono font-bold text-gray-400">Column Headers (Row 1):</span>
                 <div className="flex flex-wrap gap-1">
                   {["Recurring Expense ID", "Expense Name", "Category", "Amount", "Frequency", "Start Date", "End Date", "Payments Per Year", "Specific Months JSON", "Status", "Notes", "Created At", "Updated At"].map(col => (
+                    <span key={col} className="bg-white border border-gray-100 rounded px-1.5 py-0.5 font-mono text-[10px] text-neutral-800 font-semibold shadow-xs">
+                      {col}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {/* Sheet 16: StaffAccounts */}
+            <div className="border border-gray-200 bg-gray-50 p-3 space-y-2 rounded-xl">
+              <div className="flex items-center justify-between border-b border-gray-100 pb-1.5">
+                <span className="font-mono text-[11px] font-bold text-black bg-white px-2 py-0.5 border border-black rounded-md">
+                  🔐 Tab 16: StaffAccounts
+                </span>
+                <span className="text-[10px] text-gray-400 font-mono">Staff portal logins, roles &amp; security credentials</span>
+              </div>
+              <div className="space-y-1">
+                <span className="block text-[9px] uppercase font-mono font-bold text-gray-400">Column Headers (Row 1):</span>
+                <div className="flex flex-wrap gap-1">
+                  {["Account ID", "Staff ID", "Name", "Username", "Passcode", "Role", "Status", "Email", "Phone", "Avatar URL", "Last Login", "Created At", "Updated At"].map(col => (
+                    <span key={col} className="bg-white border border-gray-100 rounded px-1.5 py-0.5 font-mono text-[10px] text-neutral-800 font-semibold shadow-xs">
+                      {col}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {/* Sheet 17: Attendance */}
+            <div className="border border-gray-200 bg-gray-50 p-3 space-y-2 rounded-xl">
+              <div className="flex items-center justify-between border-b border-gray-100 pb-1.5">
+                <span className="font-mono text-[11px] font-bold text-black bg-white px-2 py-0.5 border border-black rounded-md">
+                  ⏱️ Tab 17: Attendance
+                </span>
+                <span className="text-[10px] text-gray-400 font-mono">Real-time clock-in/out timestamps, hours &amp; notes</span>
+              </div>
+              <div className="space-y-1">
+                <span className="block text-[9px] uppercase font-mono font-bold text-gray-400">Column Headers (Row 1):</span>
+                <div className="flex flex-wrap gap-1">
+                  {["Attendance ID", "Staff ID", "Staff Name", "Date", "Clock In", "Clock Out", "Total Hours", "Status", "Notes", "Created At", "Updated At"].map(col => (
                     <span key={col} className="bg-white border border-gray-100 rounded px-1.5 py-0.5 font-mono text-[10px] text-neutral-800 font-semibold shadow-xs">
                       {col}
                     </span>

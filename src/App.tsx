@@ -21,6 +21,9 @@ import {
   JobItemColumn,
   JobStatus,
   StaffMember,
+  StaffAccount,
+  AttendanceRecord,
+  AuthUser,
   PayrollRecord,
   ExpenseRecord,
   ExpenseCategory,
@@ -30,6 +33,16 @@ import {
 import { INITIAL_PRODUCTS, INITIAL_COMPANIES, INITIAL_ORDERS, INITIAL_PORTALS } from './data/mockData';
 import { INITIAL_CATALOG_PRODUCTS, INITIAL_QUOTE_ENQUIRIES, sanitizeCatalogProduct } from './data/initialCatalog';
 import { INITIAL_JOBS, DEFAULT_JOB_COLUMNS, DEFAULT_JOB_ITEM_COLUMNS, createJobFromOrder } from './data/initialJobs';
+import { INITIAL_STAFF_MEMBERS, INITIAL_STAFF_ACCOUNTS, INITIAL_ATTENDANCE_RECORDS, generateAttendanceId } from './data/initialFinance';
+import {
+  formatLocalDate,
+  normalizeAttendanceDate,
+  normalizeStaffId,
+  calculateHoursWorked,
+  isRecordActiveClockIn,
+  cleanClockOut,
+  cleanClockIn
+} from './utils/attendanceUtils';
 import { DEFAULT_QUOTE_NOTES } from './constants/quoteDefaults';
 import { sheetsService } from './lib/sheetsService';
 import { EMBEDDED_APPS_SCRIPT_URL } from './config';
@@ -43,6 +56,7 @@ import SettingsPanel from './components/SettingsPanel';
 import Cart from './components/Cart';
 import LoginScreen from './components/LoginScreen';
 import AdminDashboard from './components/AdminDashboard';
+import StaffDashboard from './components/StaffDashboard';
 import NavigationDrawer from './components/NavigationDrawer';
 import OrderPortals from './components/OrderPortals';
 import PublicOrderPortal from './components/PublicOrderPortal';
@@ -466,6 +480,40 @@ export default function App() {
     return DEFAULT_EXPENSE_CATEGORIES;
   });
 
+  const [staffAccounts, setStaffAccounts] = useState<StaffAccount[]>(() => {
+    const cached = localStorage.getItem('rp_staff_accounts');
+    if (cached) {
+      try {
+        const parsed = JSON.parse(cached);
+        return Array.isArray(parsed) && parsed.length > 0 ? parsed : INITIAL_STAFF_ACCOUNTS;
+      } catch {
+        return INITIAL_STAFF_ACCOUNTS;
+      }
+    }
+    return INITIAL_STAFF_ACCOUNTS;
+  });
+
+  const [attendance, setAttendance] = useState<AttendanceRecord[]>(() => {
+    const cached = localStorage.getItem('rp_attendance');
+    if (cached) {
+      try {
+        const parsed = JSON.parse(cached);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed.map((r: any) => ({
+            ...r,
+            date: normalizeAttendanceDate(r.date),
+            clockIn: cleanClockIn(r.clockIn),
+            clockOut: cleanClockOut(r.clockOut)
+          }));
+        }
+        return INITIAL_ATTENDANCE_RECORDS;
+      } catch {
+        return INITIAL_ATTENDANCE_RECORDS;
+      }
+    }
+    return INITIAL_ATTENDANCE_RECORDS;
+  });
+
   useEffect(() => {
     localStorage.setItem('rp_notifications', JSON.stringify(notifications));
   }, [notifications]);
@@ -485,6 +533,14 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('rp_staff', JSON.stringify(staff));
   }, [staff]);
+
+  useEffect(() => {
+    localStorage.setItem('rp_staff_accounts', JSON.stringify(staffAccounts));
+  }, [staffAccounts]);
+
+  useEffect(() => {
+    localStorage.setItem('rp_attendance', JSON.stringify(attendance));
+  }, [attendance]);
 
   useEffect(() => {
     localStorage.setItem('rp_payroll', JSON.stringify(payroll));
@@ -671,8 +727,8 @@ export default function App() {
     };
   });
 
-  // Client Authentication State (Session-isolated so new windows/browsers/shared links land on sign-in window)
-  const [loggedInUser, setLoggedInUser] = useState<{ role: 'admin' | 'client'; companyId?: string } | null>(() => {
+  // Client & Staff Authentication State (Session-isolated so new windows/browsers/shared links land on sign-in window)
+  const [loggedInUser, setLoggedInUser] = useState<AuthUser | null>(() => {
     try {
       localStorage.removeItem('rp_logged_in_user');
       const cached = sessionStorage.getItem('rp_logged_in_user');
@@ -702,12 +758,77 @@ export default function App() {
     ? (companies.find(c => c.id === loggedInUser.companyId) || companies[0])
     : (companies.find(c => c.id === selectedCompanyId) || companies[0])) || FALLBACK_COMPANY;
 
-  // Client-isolated cart state
-  const [cart, setCart] = useState<CartItem[]>([]);
+  // Client-isolated cart state with company-specific local storage
+  const activeCompanyId = (loggedInUser?.role === 'client' && loggedInUser.companyId)
+    ? loggedInUser.companyId
+    : (selectedCompanyId || activeCompany?.id || 'default');
+
+  const cartStorageKey = `rp_cart_${activeCompanyId}`;
+
+  const [cart, setCart] = useState<CartItem[]>(() => {
+    try {
+      const activeId = (loggedInUser?.role === 'client' && loggedInUser.companyId)
+        ? loggedInUser.companyId
+        : (localStorage.getItem('rp_selected_company_id') || 'default');
+      const cached = localStorage.getItem(`rp_cart_${activeId}`);
+      return cached ? JSON.parse(cached) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  const currentLoadedCartKeyRef = useRef<string>(cartStorageKey);
+
+  // Reload isolated cart when active company / user changes
+  useEffect(() => {
+    currentLoadedCartKeyRef.current = cartStorageKey;
+    try {
+      const cached = localStorage.getItem(cartStorageKey);
+      if (cached) {
+        setCart(JSON.parse(cached));
+      } else {
+        setCart([]);
+      }
+    } catch {
+      setCart([]);
+    }
+  }, [cartStorageKey]);
+
+  // Persist cart to company-specific local storage key ONLY when cart matches current loaded key
+  useEffect(() => {
+    try {
+      if (cartStorageKey && currentLoadedCartKeyRef.current === cartStorageKey) {
+        localStorage.setItem(cartStorageKey, JSON.stringify(cart));
+      }
+    } catch {}
+  }, [cart, cartStorageKey]);
 
   // UI Flow States
   const [isCartOpen, setIsCartOpen] = useState(false);
-  const [activeTab, setActiveTab] = useState('browse');
+  const [activeTab, setActiveTab] = useState<string>(() => {
+    try {
+      const cached = sessionStorage.getItem('rp_logged_in_user');
+      const cachedTab = sessionStorage.getItem('rp_active_tab');
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (cachedTab) {
+          if (parsed?.role === 'admin' && (cachedTab === 'admin' || cachedTab === 'sync')) return cachedTab;
+          if (parsed?.role === 'staff') {
+            const validStaffTabs = ['dashboard', 'jobs', 'catalog', 'attendance', 'payslips', 'work-history', 'profile'];
+            if (validStaffTabs.includes(cachedTab)) return cachedTab;
+          }
+          if (parsed?.role === 'client') {
+            const validClientTabs = ['catalog', 'browse', 'portals', 'history', 'quote-history', 'settings'];
+            if (validClientTabs.includes(cachedTab)) return cachedTab;
+          }
+        }
+        if (parsed?.role === 'admin') return 'admin';
+        if (parsed?.role === 'staff') return 'dashboard';
+        if (parsed?.role === 'client') return 'catalog';
+      }
+    } catch {}
+    return 'browse';
+  });
   const [isSubmitting, setIsSubmitting] = useState(false);
   
   // Custom Modals
@@ -719,6 +840,12 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('rp_master_products', JSON.stringify(products));
   }, [products]);
+
+  useEffect(() => {
+    if (activeTab) {
+      sessionStorage.setItem('rp_active_tab', activeTab);
+    }
+  }, [activeTab]);
 
   useEffect(() => {
     try {
@@ -1104,6 +1231,8 @@ export default function App() {
         let fetchedExpenses = allData?.expenses ?? null;
         let fetchedExpenseCategories = allData?.expenseCategories ?? null;
         let fetchedRecurringExpenses = allData?.recurringExpenses ?? null;
+        let fetchedStaffAccounts = allData?.staffAccounts ?? null;
+        let fetchedAttendance = allData?.attendance ?? null;
 
         // Fallback to parallel fetches if bulk endpoint was not available or empty
         if (!allData) {
@@ -1123,7 +1252,9 @@ export default function App() {
             fetchedPayroll,
             fetchedExpenses,
             fetchedExpenseCategories,
-            fetchedRecurringExpenses
+            fetchedRecurringExpenses,
+            fetchedStaffAccounts,
+            fetchedAttendance
           ] = await Promise.all([
             sheetsService.fetchProducts(url).catch(() => null),
             sheetsService.fetchCompanies(url).catch(() => null),
@@ -1140,7 +1271,9 @@ export default function App() {
             sheetsService.fetchPayroll(url).catch(() => null),
             sheetsService.fetchExpenses(url).catch(() => null),
             sheetsService.fetchExpenseCategories(url).catch(() => null),
-            sheetsService.fetchRecurringExpenses(url).catch(() => null)
+            sheetsService.fetchRecurringExpenses(url).catch(() => null),
+            sheetsService.fetchStaffAccounts(url).catch(() => null),
+            sheetsService.fetchAttendance(url).catch(() => null)
           ]);
         }
 
@@ -1579,6 +1712,205 @@ export default function App() {
           });
         }
 
+        // Process staff accounts
+        if (fetchedStaffAccounts !== null && Array.isArray(fetchedStaffAccounts)) {
+          setStaffAccounts(prevAccounts => {
+            const fetchedMap = new Map(fetchedStaffAccounts.map(a => [a.id, a]));
+            const fetchedIds = new Set(fetchedStaffAccounts.map(a => a.id));
+            const now = Date.now();
+            const mergedExisting = prevAccounts.map(localAcc => {
+              const serverAcc = fetchedMap.get(localAcc.id);
+              if (!serverAcc) return localAcc;
+              const localUpdated = new Date(localAcc.updatedAt || 0).getTime();
+              const serverUpdated = new Date(serverAcc.updatedAt || 0).getTime();
+              if (!isNaN(localUpdated) && (now - localUpdated < 20000) && localUpdated > serverUpdated) {
+                return localAcc;
+              }
+              return serverAcc;
+            });
+            const prevIds = new Set(prevAccounts.map(a => a.id));
+            const newServerAccounts = fetchedStaffAccounts.filter(a => !prevIds.has(a.id));
+            const activeExisting = mergedExisting.filter(a => {
+              if (fetchedIds.has(a.id)) return true;
+              const createdTimestamp = new Date(a.createdAt || 0).getTime();
+              return !isNaN(createdTimestamp) && (now - createdTimestamp < 60000);
+            });
+            const merged = [...activeExisting, ...newServerAccounts];
+            const seen = new Set<string>();
+            return merged.filter(a => {
+              if (seen.has(a.id)) return false;
+              seen.add(a.id);
+              return true;
+            });
+          });
+        }
+
+        // Process attendance
+        if (fetchedAttendance !== null && Array.isArray(fetchedAttendance)) {
+          setAttendance(prevAttendance => {
+            const fetchedMap = new Map(fetchedAttendance.map(a => [a.id, a]));
+
+            const mergedExisting = prevAttendance.map(localAtt => {
+              const normLocalDate = normalizeAttendanceDate(localAtt.date);
+              const cleanLocalStaffId = normalizeStaffId(localAtt.staffId);
+
+              const serverAtt = fetchedMap.get(localAtt.id) || fetchedAttendance.find(fa => {
+                const normServerDate = normalizeAttendanceDate(fa.date);
+                const cleanServerStaffId = normalizeStaffId(fa.staffId);
+                return (fa.id === localAtt.id) || (cleanServerStaffId && cleanLocalStaffId && cleanServerStaffId === cleanLocalStaffId && normServerDate === normLocalDate);
+              });
+
+              if (!serverAtt) return localAtt;
+
+              const cleanLocalIn = cleanClockIn(localAtt.clockIn);
+              const cleanLocalOut = cleanClockOut(localAtt.clockOut);
+              const cleanServerIn = cleanClockIn(serverAtt.clockIn);
+              const cleanServerOut = cleanClockOut(serverAtt.clockOut);
+
+              const isLocalActive = isRecordActiveClockIn(localAtt);
+
+              // 1. If local state has an active ongoing Clock-In session
+              if (isLocalActive) {
+                // If server has a legitimate subsequent clock-out that occurred on another device/browser
+                const serverHasClockOut = Boolean(cleanServerOut);
+                const serverUpdated = new Date(serverAtt.updatedAt || 0).getTime();
+                const localUpdated = new Date(localAtt.updatedAt || localAtt.createdAt || 0).getTime();
+                if (serverHasClockOut && !isNaN(serverUpdated) && serverUpdated > localUpdated) {
+                  const hours = Number(serverAtt.totalHours) > 0
+                    ? Number(serverAtt.totalHours)
+                    : calculateHoursWorked(cleanServerIn || cleanLocalIn, cleanServerOut, normLocalDate);
+                  return {
+                    ...serverAtt,
+                    id: localAtt.id || serverAtt.id,
+                    staffId: localAtt.staffId || serverAtt.staffId,
+                    staffName: localAtt.staffName || serverAtt.staffName,
+                    date: normLocalDate,
+                    clockIn: cleanServerIn || cleanLocalIn,
+                    clockOut: cleanServerOut,
+                    totalHours: hours,
+                    status: serverAtt.status || 'Present'
+                  };
+                }
+
+                // Preserve local active clock-in session
+                return {
+                  ...serverAtt,
+                  id: localAtt.id || serverAtt.id,
+                  staffId: localAtt.staffId || serverAtt.staffId,
+                  staffName: localAtt.staffName || serverAtt.staffName,
+                  date: normLocalDate,
+                  clockIn: cleanLocalIn || cleanServerIn,
+                  clockOut: undefined,
+                  totalHours: 0,
+                  status: 'Present',
+                  notes: localAtt.notes || serverAtt.notes,
+                  createdAt: localAtt.createdAt || serverAtt.createdAt,
+                  updatedAt: localAtt.updatedAt || serverAtt.updatedAt
+                };
+              }
+
+              // 2. If local state has a completed shift (clockIn + clockOut), protect working hours from stale server states
+              if (cleanLocalIn && cleanLocalOut) {
+                const localHours = Number(localAtt.totalHours) > 0
+                  ? Number(localAtt.totalHours)
+                  : calculateHoursWorked(cleanLocalIn, cleanLocalOut, normLocalDate);
+
+                // If server response lacks clock-out or has 0 hours, preserve local completed record
+                if (!cleanServerOut) {
+                  return {
+                    ...localAtt,
+                    id: localAtt.id || serverAtt.id,
+                    date: normLocalDate,
+                    clockIn: cleanLocalIn,
+                    clockOut: cleanLocalOut,
+                    totalHours: localHours,
+                    status: localAtt.status || serverAtt.status || 'Present'
+                  };
+                }
+
+                const localUpdated = new Date(localAtt.updatedAt || localAtt.createdAt || 0).getTime();
+                const serverUpdated = new Date(serverAtt.updatedAt || serverAtt.createdAt || 0).getTime();
+                if (!isNaN(localUpdated) && localUpdated > serverUpdated) {
+                  return {
+                    ...localAtt,
+                    id: localAtt.id || serverAtt.id,
+                    date: normLocalDate,
+                    clockIn: cleanLocalIn,
+                    clockOut: cleanLocalOut,
+                    totalHours: localHours,
+                    status: localAtt.status || 'Present'
+                  };
+                }
+
+                const serverHours = Number(serverAtt.totalHours) > 0
+                  ? Number(serverAtt.totalHours)
+                  : calculateHoursWorked(cleanServerIn || cleanLocalIn, cleanServerOut, normLocalDate);
+
+                return {
+                  ...serverAtt,
+                  id: localAtt.id || serverAtt.id,
+                  staffId: localAtt.staffId || serverAtt.staffId,
+                  staffName: localAtt.staffName || serverAtt.staffName,
+                  date: normLocalDate,
+                  clockIn: cleanServerIn || cleanLocalIn,
+                  clockOut: cleanServerOut,
+                  totalHours: serverHours > 0 ? serverHours : localHours,
+                  status: serverAtt.status || localAtt.status || 'Present'
+                };
+              }
+
+              // 3. Fallback timestamp comparison for other states
+              const localUpdated = new Date(localAtt.updatedAt || localAtt.createdAt || 0).getTime();
+              const serverUpdated = new Date(serverAtt.updatedAt || serverAtt.createdAt || 0).getTime();
+              if (!isNaN(localUpdated) && localUpdated > serverUpdated) {
+                return localAtt;
+              }
+              return serverAtt;
+            });
+
+            const localIds = new Set(prevAttendance.map(a => a.id));
+            const localStaffDates = new Set(prevAttendance.map(a => `${normalizeStaffId(a.staffId)}_${normalizeAttendanceDate(a.date)}`));
+            const newServerAttendance = fetchedAttendance.filter(a => {
+              const key = `${normalizeStaffId(a.staffId)}_${normalizeAttendanceDate(a.date)}`;
+              return !localIds.has(a.id) && !localStaffDates.has(key);
+            }).map(a => {
+              const normDate = normalizeAttendanceDate(a.date);
+              const cIn = cleanClockIn(a.clockIn);
+              const cOut = cleanClockOut(a.clockOut);
+              const hours = Number(a.totalHours) > 0 ? Number(a.totalHours) : (cIn && cOut ? calculateHoursWorked(cIn, cOut, normDate) : 0);
+              return {
+                ...a,
+                date: normDate,
+                clockIn: cIn,
+                clockOut: cOut,
+                totalHours: hours
+              };
+            });
+
+            const merged = [...mergedExisting, ...newServerAttendance];
+            const seen = new Set<string>();
+            const seenStaffDates = new Set<string>();
+
+            // Sort so complete records (active or with hours) are preferred during deduplication
+            const sortedMerged = [...merged].sort((a, b) => {
+              const aScore = (cleanClockIn(a.clockIn) && cleanClockOut(a.clockOut)) ? 2 : (isRecordActiveClockIn(a) ? 1 : 0);
+              const bScore = (cleanClockIn(b.clockIn) && cleanClockOut(b.clockOut)) ? 2 : (isRecordActiveClockIn(b) ? 1 : 0);
+              if (bScore !== aScore) return bScore - aScore;
+              const bTime = new Date(b.updatedAt || b.createdAt || 0).getTime() || 0;
+              const aTime = new Date(a.updatedAt || a.createdAt || 0).getTime() || 0;
+              return bTime - aTime;
+            });
+
+            return sortedMerged.filter(a => {
+              const staffDateKey = `${normalizeStaffId(a.staffId)}_${normalizeAttendanceDate(a.date)}`;
+              if (seen.has(a.id) || seenStaffDates.has(staffDateKey)) return false;
+              seen.add(a.id);
+              seenStaffDates.add(staffDateKey);
+              return true;
+            });
+          });
+        }
+
         setLastSyncedTime(new Date().toLocaleTimeString());
       } catch (err) {
         console.warn('Google Sheets sync notice:', err);
@@ -1623,10 +1955,15 @@ export default function App() {
 
   // Ensure default active tab is appropriate for logged-in user
   useEffect(() => {
-    if (loggedInUser?.role === 'admin') {
-      setActiveTab('admin');
-    } else {
-      setActiveTab('catalog');
+    if (!loggedInUser) return;
+    if (loggedInUser.role === 'admin') {
+      if (activeTab !== 'admin' && activeTab !== 'sync') setActiveTab('admin');
+    } else if (loggedInUser.role === 'staff') {
+      const validStaffTabs = ['dashboard', 'jobs', 'catalog', 'attendance', 'payslips', 'work-history', 'profile'];
+      if (!validStaffTabs.includes(activeTab)) setActiveTab('dashboard');
+    } else if (loggedInUser.role === 'client') {
+      const validClientTabs = ['catalog', 'browse', 'portals', 'history', 'quote-history', 'settings'];
+      if (!validClientTabs.includes(activeTab)) setActiveTab('catalog');
     }
   }, [loggedInUser?.role]);
 
@@ -1784,10 +2121,19 @@ export default function App() {
     for (const newOrd of newOrders) {
       const oldOrd = orders.find(o => o.id === newOrd.id);
       if (oldOrd && oldOrd.status !== newOrd.status) {
-        const linkedJob = jobs.find(j => j.orderId === newOrd.id || (j.orderNumber && newOrd.orderNumber && j.orderNumber === newOrd.orderNumber));
+        const linkedJob = jobs.find(j => 
+          (j.orderId && j.orderId === newOrd.id) || 
+          (j.orderNumber && newOrd.orderNumber && j.orderNumber === newOrd.orderNumber) ||
+          (newOrd.jobId && j.id === newOrd.jobId)
+        );
         if (linkedJob && linkedJob.status !== newOrd.status) {
-          const updatedJobStatus = newOrd.status as JobStatus;
-          setJobs(prev => prev.map(j => j.id === linkedJob.id ? { ...j, status: updatedJobStatus, updatedAt: new Date().toISOString() } : j));
+          const updatedJobStatus = (newOrd.status === 'Pending Approval' ? 'Pending' : newOrd.status) as JobStatus;
+          setJobs(prev => prev.map(j => j.id === linkedJob.id ? { 
+            ...j, 
+            status: updatedJobStatus, 
+            values: { ...j.values, 'col-status': updatedJobStatus }, 
+            updatedAt: new Date().toISOString() 
+          } : j));
           if (appsScriptConfig.isConnected && appsScriptConfig.webAppUrl) {
             sheetsService.updateJobStatus(appsScriptConfig.webAppUrl, linkedJob.id, updatedJobStatus).catch(err => console.warn('Job status sync notice:', err));
           }
@@ -1857,10 +2203,14 @@ export default function App() {
     }
 
     // Synchronize linked Order if exists
-    if (updatedJob.orderId) {
-      const linkedOrder = orders.find(o => o.id === updatedJob.orderId || (o.orderNumber && updatedJob.orderNumber && o.orderNumber === updatedJob.orderNumber));
+    if (updatedJob.orderId || updatedJob.orderNumber) {
+      const linkedOrder = orders.find(o => 
+        (updatedJob.orderId && o.id === updatedJob.orderId) || 
+        (updatedJob.orderNumber && o.orderNumber && o.orderNumber === updatedJob.orderNumber) ||
+        (o.jobId && o.jobId === updatedJob.id)
+      );
       if (linkedOrder && linkedOrder.status !== updatedJob.status) {
-        const updatedOrders = orders.map(o => o.id === linkedOrder.id ? { ...o, status: updatedJob.status } : o);
+        const updatedOrders = orders.map(o => o.id === linkedOrder.id ? { ...o, status: updatedJob.status, updatedAt: new Date().toISOString() } : o);
         handleUpdateOrders(updatedOrders);
       }
     }
@@ -1870,7 +2220,7 @@ export default function App() {
     let targetJob: Job | undefined;
     setJobs(prev => prev.map(j => {
       if (j.id === jobId) {
-        targetJob = { ...j, status, updatedAt: new Date().toISOString() };
+        targetJob = { ...j, status, values: { ...j.values, 'col-status': status }, updatedAt: new Date().toISOString() };
         return targetJob;
       }
       return j;
@@ -1881,10 +2231,15 @@ export default function App() {
     }
 
     // Synchronize linked Order if exists
-    if (targetJob && (targetJob.orderId || targetJob.orderNumber)) {
-      const linkedOrder = orders.find(o => o.id === targetJob!.orderId || (o.orderNumber && targetJob!.orderNumber && o.orderNumber === targetJob!.orderNumber));
+    const target = targetJob || jobs.find(j => j.id === jobId);
+    if (target && (target.orderId || target.orderNumber)) {
+      const linkedOrder = orders.find(o => 
+        (target.orderId && o.id === target.orderId) || 
+        (target.orderNumber && o.orderNumber && o.orderNumber === target.orderNumber) ||
+        (o.jobId && o.jobId === target.id)
+      );
       if (linkedOrder && linkedOrder.status !== status) {
-        const updatedOrders = orders.map(o => o.id === linkedOrder.id ? { ...o, status } : o);
+        const updatedOrders = orders.map(o => o.id === linkedOrder.id ? { ...o, status, updatedAt: new Date().toISOString() } : o);
         handleUpdateOrders(updatedOrders);
       }
     }
@@ -1973,7 +2328,7 @@ export default function App() {
     }
   };
 
-  // Payroll Management Handlers
+  // Payroll Management Handlers with Bi-Directional Expense Synchronization
   const handleSavePayroll = (record: PayrollRecord) => {
     const updated: PayrollRecord = {
       ...record,
@@ -1986,6 +2341,67 @@ export default function App() {
       }
       return [updated, ...prev];
     });
+
+    // Bi-Directional Synchronization with Expenses
+    const targetExpenseId = `EXP-PAY-${updated.id}`;
+    if (updated.status === 'Paid') {
+      const expenseAmount = Number(updated.netPay || updated.grossPay || 0);
+      const linkedExpense: ExpenseRecord = {
+        id: targetExpenseId,
+        name: `Payroll Disbursal: ${updated.staffName} (${updated.payPeriodStart} - ${updated.payPeriodEnd})`,
+        category: 'Salaries / Payroll',
+        type: 'Fixed',
+        amount: expenseAmount,
+        date: updated.payDate || new Date().toISOString().slice(0, 10),
+        status: 'Paid',
+        paymentStatus: 'Paid',
+        paymentDate: updated.payDate || new Date().toISOString().slice(0, 10),
+        vendor: updated.staffName,
+        referenceNumber: updated.id,
+        payrollId: updated.id,
+        notes: `Auto-generated from finalized Payroll ${updated.id} (${updated.position || 'Staff'}). Net Pay: ₱${expenseAmount.toLocaleString()}`,
+        createdAt: updated.createdAt || new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      };
+
+      setExpenses(prev => {
+        const existingIdx = prev.findIndex(e => e.id === targetExpenseId || e.payrollId === updated.id);
+        if (existingIdx > -1) {
+          const copy = [...prev];
+          copy[existingIdx] = { ...copy[existingIdx], ...linkedExpense };
+          return copy;
+        }
+        return [linkedExpense, ...prev];
+      });
+
+      if (appsScriptConfig.isConnected && appsScriptConfig.webAppUrl) {
+        sheetsService.saveExpense(appsScriptConfig.webAppUrl, linkedExpense).catch(err => console.warn('Sync linked payroll expense notice:', err));
+      }
+    } else {
+      // If payroll is no longer Paid (e.g. reverted to Draft/Reviewed or Voided), void or remove the linked expense
+      setExpenses(prev => {
+        const hasLinked = prev.some(e => e.payrollId === updated.id || e.id === targetExpenseId);
+        if (!hasLinked) return prev;
+        return prev.map(e => {
+          if (e.payrollId === updated.id || e.id === targetExpenseId) {
+            const nextStatus = updated.status === 'Voided' ? 'Voided' : 'Pending';
+            const updatedExp: ExpenseRecord = {
+              ...e,
+              status: nextStatus,
+              paymentStatus: nextStatus,
+              updatedAt: new Date().toISOString(),
+              notes: `${e.notes || ''} [Linked payroll status: ${updated.status}]`
+            };
+            if (appsScriptConfig.isConnected && appsScriptConfig.webAppUrl) {
+              sheetsService.saveExpense(appsScriptConfig.webAppUrl, updatedExp).catch(err => console.warn('Update voided payroll expense notice:', err));
+            }
+            return updatedExp;
+          }
+          return e;
+        });
+      });
+    }
+
     if (appsScriptConfig.isConnected && appsScriptConfig.webAppUrl) {
       sheetsService.savePayroll(appsScriptConfig.webAppUrl, updated).catch(err => console.warn('Save payroll sync notice:', err));
     }
@@ -1993,6 +2409,44 @@ export default function App() {
 
   const handleSavePayrollBatch = (records: PayrollRecord[]) => {
     setPayroll(records);
+
+    // Sync any batch records marked Paid
+    records.forEach(r => {
+      if (r.status === 'Paid') {
+        const targetExpenseId = `EXP-PAY-${r.id}`;
+        const expenseAmount = Number(r.netPay || r.grossPay || 0);
+        const linkedExpense: ExpenseRecord = {
+          id: targetExpenseId,
+          name: `Payroll Disbursal: ${r.staffName} (${r.payPeriodStart} - ${r.payPeriodEnd})`,
+          category: 'Salaries / Payroll',
+          type: 'Fixed',
+          amount: expenseAmount,
+          date: r.payDate || new Date().toISOString().slice(0, 10),
+          status: 'Paid',
+          paymentStatus: 'Paid',
+          paymentDate: r.payDate || new Date().toISOString().slice(0, 10),
+          vendor: r.staffName,
+          referenceNumber: r.id,
+          payrollId: r.id,
+          notes: `Auto-generated from Payroll ${r.id}`,
+          createdAt: r.createdAt || new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        };
+        setExpenses(prev => {
+          const idx = prev.findIndex(e => e.id === targetExpenseId || e.payrollId === r.id);
+          if (idx > -1) {
+            const copy = [...prev];
+            copy[idx] = linkedExpense;
+            return copy;
+          }
+          return [linkedExpense, ...prev];
+        });
+        if (appsScriptConfig.isConnected && appsScriptConfig.webAppUrl) {
+          sheetsService.saveExpense(appsScriptConfig.webAppUrl, linkedExpense).catch(err => console.warn('Sync linked payroll expense notice:', err));
+        }
+      }
+    });
+
     if (appsScriptConfig.isConnected && appsScriptConfig.webAppUrl) {
       sheetsService.savePayrollBatch(appsScriptConfig.webAppUrl, records).catch(err => console.warn('Save payroll batch sync notice:', err));
     }
@@ -2000,8 +2454,14 @@ export default function App() {
 
   const handleDeletePayroll = (payrollId: string) => {
     setPayroll(prev => prev.filter(p => p.id !== payrollId));
+    
+    // Also clean up or void the linked expense
+    const targetExpenseId = `EXP-PAY-${payrollId}`;
+    setExpenses(prev => prev.filter(e => e.id !== targetExpenseId && e.payrollId !== payrollId));
+
     if (appsScriptConfig.isConnected && appsScriptConfig.webAppUrl) {
       sheetsService.deletePayroll(appsScriptConfig.webAppUrl, payrollId).catch(err => console.warn('Delete payroll sync notice:', err));
+      sheetsService.deleteExpense(appsScriptConfig.webAppUrl, targetExpenseId).catch(err => console.warn('Delete linked expense notice:', err));
     }
   };
 
@@ -2451,13 +2911,156 @@ export default function App() {
     }
   };
 
-  const handleLogin = (role: 'admin' | 'client', companyId?: string) => {
-    setLoggedInUser({ role, companyId });
+  const handleLogin = (
+    role: 'admin' | 'client' | 'staff',
+    companyId?: string,
+    staffInfo?: { staffId: string; accountId: string; name: string; username: string }
+  ) => {
+    if (role === 'staff' && staffInfo) {
+      setLoggedInUser({
+        role: 'staff',
+        staffId: staffInfo.staffId,
+        accountId: staffInfo.accountId,
+        name: staffInfo.name,
+        username: staffInfo.username
+      });
+      setActiveTab('dashboard');
+    } else {
+      setLoggedInUser({ role, companyId });
+      if (role === 'client') {
+        setActiveTab('catalog');
+      } else if (role === 'admin') {
+        setActiveTab('admin');
+      }
+    }
+  };
+
+  const handleClockIn = async (staffId: string, staffName: string, notes?: string) => {
+    const now = new Date();
+    const dateStr = formatLocalDate(now);
+    const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true });
+
+    const newAttendance: AttendanceRecord = {
+      id: generateAttendanceId(staffId, dateStr),
+      staffId,
+      staffName,
+      date: dateStr,
+      clockIn: timeStr,
+      clockOut: undefined,
+      totalHours: 0,
+      status: 'Present',
+      notes,
+      createdAt: now.toISOString(),
+      updatedAt: now.toISOString()
+    };
+
+    setAttendance(prev => {
+      const cleanSId = normalizeStaffId(staffId);
+      const existingIdx = prev.findIndex(a => a.id === newAttendance.id || (normalizeStaffId(a.staffId) === cleanSId && normalizeAttendanceDate(a.date) === dateStr));
+      if (existingIdx > -1) {
+        const updated = [...prev];
+        updated[existingIdx] = { ...updated[existingIdx], ...newAttendance };
+        return updated;
+      }
+      return [newAttendance, ...prev];
+    });
+
+    if (appsScriptConfig.isConnected && appsScriptConfig.webAppUrl) {
+      await sheetsService.saveAttendance(appsScriptConfig.webAppUrl, newAttendance);
+    }
+  };
+
+  const handleClockOut = async (attendanceId: string, notes?: string) => {
+    const now = new Date();
+    const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true });
+
+    let updatedRecord: AttendanceRecord | null = null;
+
+    setAttendance(prev => {
+      return prev.map(rec => {
+        const isTarget = rec.id === attendanceId ||
+          (normalizeStaffId(rec.staffId) === normalizeStaffId(attendanceId) && isRecordActiveClockIn(rec));
+        if (isTarget) {
+          const hoursWorked = calculateHoursWorked(rec.clockIn, timeStr, rec.date);
+
+          updatedRecord = {
+            ...rec,
+            clockOut: timeStr,
+            totalHours: hoursWorked,
+            status: 'Present',
+            notes: notes ? (rec.notes ? `${rec.notes} | ${notes}` : notes) : rec.notes,
+            updatedAt: now.toISOString()
+          };
+          return updatedRecord;
+        }
+        return rec;
+      });
+    });
+
+    if (updatedRecord && appsScriptConfig.isConnected && appsScriptConfig.webAppUrl) {
+      await sheetsService.saveAttendance(appsScriptConfig.webAppUrl, updatedRecord);
+    }
+  };
+
+  const handleSaveAttendance = (record: AttendanceRecord) => {
+    setAttendance(prev => {
+      const idx = prev.findIndex(a => a.id === record.id);
+      if (idx > -1) {
+        const copy = [...prev];
+        copy[idx] = record;
+        return copy;
+      }
+      return [record, ...prev];
+    });
+    if (appsScriptConfig.isConnected && appsScriptConfig.webAppUrl) {
+      sheetsService.saveAttendance(appsScriptConfig.webAppUrl, record);
+    }
+  };
+
+  const handleSaveAttendanceBatch = (records: AttendanceRecord[]) => {
+    setAttendance(prev => {
+      const copy = [...prev];
+      records.forEach(record => {
+        const idx = copy.findIndex(a => a.id === record.id);
+        if (idx > -1) {
+          copy[idx] = record;
+        } else {
+          copy.unshift(record);
+        }
+      });
+      return copy;
+    });
+    if (appsScriptConfig.isConnected && appsScriptConfig.webAppUrl) {
+      records.forEach(rec => sheetsService.saveAttendance(appsScriptConfig.webAppUrl, rec));
+    }
+  };
+
+  const handleSaveStaffAccount = (account: StaffAccount) => {
+    setStaffAccounts(prev => {
+      const idx = prev.findIndex(a => a.id === account.id || a.staffId === account.staffId);
+      if (idx > -1) {
+        const copy = [...prev];
+        copy[idx] = account;
+        return copy;
+      }
+      return [account, ...prev];
+    });
+    if (appsScriptConfig.isConnected && appsScriptConfig.webAppUrl) {
+      sheetsService.saveStaffAccount(appsScriptConfig.webAppUrl, account);
+    }
+  };
+
+  const handleDeleteStaffAccount = (accountId: string) => {
+    setStaffAccounts(prev => prev.filter(a => a.id !== accountId));
+    if (appsScriptConfig.isConnected && appsScriptConfig.webAppUrl) {
+      sheetsService.deleteStaffAccount(appsScriptConfig.webAppUrl, accountId);
+    }
   };
 
   const handleLogout = () => {
     setLoggedInUser(null);
     sessionStorage.removeItem('rp_logged_in_user');
+    sessionStorage.removeItem('rp_active_tab');
     localStorage.removeItem('rp_logged_in_user');
   };
 
@@ -3123,6 +3726,8 @@ export default function App() {
         <style dangerouslySetInnerHTML={{ __html: getThemeStyles(systemSettings.colorTheme || 'classic_noir') }} />
         <LoginScreen
           companies={companies}
+          staffAccounts={staffAccounts}
+          staff={staff}
           onLogin={handleLogin}
           systemSettings={systemSettings}
           onSyncSheets={syncWithSheets}
@@ -3172,29 +3777,80 @@ export default function App() {
             setActiveTab(tab);
             setIsAdminNavOpen(false);
           }}
-          counts={{
-            catalog: scopedProducts.length,
-            browse: catalogProducts.length,
-            portals: orderPortals.filter(p => p.companyId === activeCompany.id).length,
-            history: orders.filter(o => o.companyName?.toLowerCase() === activeCompany.name?.toLowerCase()).length,
-            quotes: quoteEnquiries.filter(q => q.companyName?.toLowerCase() === activeCompany.name?.toLowerCase()).length
-          }}
+          counts={
+            loggedInUser.role === 'staff'
+              ? {
+                  jobs: jobs.length,
+                  catalog: catalogProducts.length,
+                  payslips: payroll.filter(p => p.staffId === loggedInUser.staffId).length
+                }
+              : {
+                  catalog: scopedProducts.length,
+                  browse: catalogProducts.length,
+                  portals: orderPortals.filter(p => p.companyId === activeCompany.id).length,
+                  history: orders.filter(o => o.companyName?.toLowerCase() === activeCompany.name?.toLowerCase()).length,
+                  quotes: quoteEnquiries.filter(q => q.companyName?.toLowerCase() === activeCompany.name?.toLowerCase()).length
+                }
+          }
+          currentStaffName={loggedInUser.name || 'Staff Member'}
           onLogout={handleLogout}
         />
       )}
 
       {/* Main App Workspace Stage */}
-      <main className={`flex-1 w-full mx-auto px-4 py-8 sm:px-8 ${activeTab === 'admin' || activeTab === 'sync' ? 'max-w-[1600px]' : 'max-w-7xl'}`}>
+      <main className={`flex-1 w-full mx-auto px-4 py-8 sm:px-8 ${activeTab === 'admin' || activeTab === 'sync' || loggedInUser.role === 'staff' ? 'max-w-[1600px]' : 'max-w-7xl'}`}>
         <AnimatePresence mode="wait">
           <motion.div
-            key={activeTab}
+            key={loggedInUser.role === 'staff' ? `staff-portal-${activeTab}` : activeTab}
             initial={{ opacity: 0, y: 5 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -5 }}
             transition={{ duration: 0.2 }}
           >
-            {(activeTab === 'admin' || activeTab === 'sync') && loggedInUser?.role === 'admin' && (
+            {loggedInUser.role === 'staff' && (
+              <StaffDashboard
+                currentUser={loggedInUser}
+                staffMember={staff.find(s => s.id === loggedInUser.staffId || s.fullName.toLowerCase() === (loggedInUser.name || '').toLowerCase())}
+                staffAccount={staffAccounts.find(sa => sa.id === loggedInUser.accountId || sa.staffId === loggedInUser.staffId || sa.username === loggedInUser.username)}
+                attendanceRecords={attendance}
+                payrollRecords={payroll}
+                jobs={jobs}
+                jobColumns={jobColumns}
+                jobItemColumns={jobItemColumns}
+                companies={companies}
+                orders={orders}
+                catalogProducts={catalogProducts}
+                quoteEnquiries={quoteEnquiries}
+                onAddCatalogProduct={handleAddCatalogProduct}
+                onUpdateCatalogProduct={handleUpdateCatalogProduct}
+                onDeleteCatalogProduct={handleDeleteCatalogProduct}
+                onUpdateQuoteEnquiryStatus={handleUpdateQuoteEnquiryStatus}
+                onDeleteQuoteEnquiry={handleDeleteQuoteEnquiry}
+                onSaveQuoteEnquiry={handleSaveQuoteEnquiry}
+                onAddProductToCompanyCatalog={handleAddProductToCompanyCatalog}
+                onClockIn={handleClockIn}
+                onClockOut={handleClockOut}
+                onUpdateAttendance={handleSaveAttendance}
+                onSaveJob={handleSaveJob}
+                onUpdateJobStatus={handleUpdateJobStatus}
+                onDeleteJob={handleDeleteJob}
+                onUpdateStaffAccount={handleSaveStaffAccount}
+                onUpdateStaffMember={handleSaveStaff}
+                onUpdateOrderStatus={(orderId, status) => handleUpdateOrders(orders.map(o => o.id === orderId ? { ...o, status } : o))}
+                systemSettings={systemSettings}
+                currencySymbol={systemSettings.currencySymbol || 'Php'}
+                onLogout={handleLogout}
+                onSyncSheets={syncWithSheets}
+                isSyncingSheets={isSyncingSheets}
+                activeTab={activeTab}
+                onTabChange={(t) => setActiveTab(t)}
+                appsScriptUrl={appsScriptConfig.isConnected ? appsScriptConfig.webAppUrl : undefined}
+              />
+            )}
+
+            {loggedInUser.role !== 'staff' && (activeTab === 'admin' || activeTab === 'sync') && loggedInUser?.role === 'admin' && (
               <AdminDashboard
+                currentUser={loggedInUser}
                 products={products}
                 companies={companies}
                 orders={orders}
@@ -3213,15 +3869,21 @@ export default function App() {
                 highlightJobId={highlightJobId}
                 staff={staff}
                 payroll={payroll}
+                attendance={attendance}
+                staffAccounts={staffAccounts}
                 expenses={expenses}
                 recurringExpenses={recurringExpenses}
                 expenseCategories={expenseCategories}
                 onSaveStaff={handleSaveStaff}
                 onSaveStaffBatch={handleSaveStaffBatch}
                 onDeleteStaff={handleDeleteStaff}
+                onSaveStaffAccount={handleSaveStaffAccount}
+                onDeleteStaffAccount={handleDeleteStaffAccount}
                 onSavePayroll={handleSavePayroll}
                 onSavePayrollBatch={handleSavePayrollBatch}
                 onDeletePayroll={handleDeletePayroll}
+                onSaveAttendance={handleSaveAttendance}
+                onSaveAttendanceBatch={handleSaveAttendanceBatch}
                 onSaveExpense={handleSaveExpense}
                 onSaveExpensesBatch={handleSaveExpensesBatch}
                 onDeleteExpense={handleDeleteExpense}
@@ -3263,7 +3925,7 @@ export default function App() {
               />
             )}
 
-            {activeTab === 'browse' && (
+            {loggedInUser.role !== 'staff' && activeTab === 'browse' && (
               <BrowseProducts
                 products={catalogProducts}
                 onAddQuoteEnquiry={handleAddQuoteEnquiry}
@@ -3271,7 +3933,7 @@ export default function App() {
               />
             )}
 
-            {activeTab === 'catalog' && (
+            {loggedInUser.role !== 'staff' && activeTab === 'catalog' && (
               <ProductCatalog
                 products={scopedProducts}
                 onAddToCart={handleAddToCart}
@@ -3281,7 +3943,7 @@ export default function App() {
               />
             )}
             
-            {activeTab === 'portals' && (
+            {loggedInUser.role !== 'staff' && activeTab === 'portals' && (
               <OrderPortals
                 portals={orderPortals}
                 activeCompany={activeCompany}
@@ -3301,7 +3963,7 @@ export default function App() {
               />
             )}
 
-            {activeTab === 'history' && (
+            {loggedInUser.role !== 'staff' && activeTab === 'history' && (
               <OrderHistory
                 orders={orders}
                 selectedCompanyName={activeCompany.name}
@@ -3313,7 +3975,7 @@ export default function App() {
               />
             )}
 
-            {activeTab === 'quote-history' && (
+            {loggedInUser.role !== 'staff' && activeTab === 'quote-history' && (
               <QuoteRequestHistory
                 quoteEnquiries={quoteEnquiries}
                 activeCompany={activeCompany}
@@ -3323,7 +3985,7 @@ export default function App() {
               />
             )}
 
-            {activeTab === 'settings' && (
+            {loggedInUser.role !== 'staff' && activeTab === 'settings' && (
               <CustomerSettings
                 activeCompany={activeCompany}
                 onUpdateCompany={handleUpdateCompany}
