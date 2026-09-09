@@ -9,6 +9,7 @@ import { parseColorList, resolveColorHex } from '../utils/colorUtils';
 import { normalizeAttendanceDate, cleanClockOut, cleanClockIn, calculateHoursWorked } from '../utils/attendanceUtils';
 import { DEFAULT_QUOTE_NOTES } from '../constants/quoteDefaults';
 import { EMBEDDED_APPS_SCRIPT_URL } from '../config';
+import { deduplicateRecurringExpenses } from '../utils/financeCalculations';
 
 export { parseColorList, resolveColorHex };
 
@@ -2301,23 +2302,33 @@ export const sheetsService = {
       if (!response.ok) return null;
       const rawData = await response.json();
       if (Array.isArray(rawData)) {
-        return rawData.map(item => ({
-          id: String(getProp(item, ['ExpenseID', 'expenseId', 'id', 'Expense ID']) || `EXP-${Date.now()}`),
-          name: String(getProp(item, ['ExpenseName', 'expenseName', 'Name', 'name', 'Expense Name', 'Description']) || ''),
-          category: String(getProp(item, ['Category', 'category']) || 'Miscellaneous'),
-          type: (getProp(item, ['ExpenseType', 'expenseType', 'Type', 'type', 'Expense Type']) || 'Variable') as any,
-          amount: Number(getProp(item, ['Amount', 'amount', 'Cost', 'Total']) || 0),
-          date: String(getProp(item, ['ExpenseDate', 'expenseDate', 'Date', 'date', 'Expense Date']) || new Date().toISOString().split('T')[0]),
-          status: (getProp(item, ['PaymentStatus', 'paymentStatus', 'Status', 'status', 'Payment Status']) || 'Pending') as any,
-          paymentDate: getProp(item, ['PaymentDate', 'paymentDate', 'Payment Date']) ? String(getProp(item, ['PaymentDate', 'paymentDate', 'Payment Date'])) : undefined,
-          vendor: getProp(item, ['Vendor', 'vendor', 'Payee', 'payee', 'Supplier']) ? String(getProp(item, ['Vendor', 'vendor', 'Payee', 'payee', 'Supplier'])) : undefined,
-          referenceNumber: getProp(item, ['ReferenceNumber', 'referenceNumber', 'Ref #', 'Reference Number', 'ReceiptNo', 'InvoiceNo']) ? String(getProp(item, ['ReferenceNumber', 'referenceNumber', 'Ref #', 'Reference Number', 'ReceiptNo', 'InvoiceNo'])) : undefined,
-          notes: String(getProp(item, ['Notes', 'notes', 'Remarks']) || ''),
-          recurringExpenseId: getProp(item, ['RecurringExpenseID', 'recurringExpenseId', 'Recurring Expense ID']) ? String(getProp(item, ['RecurringExpenseID', 'recurringExpenseId', 'Recurring Expense ID'])) : undefined,
-          payrollId: getProp(item, ['PayrollID', 'payrollId', 'Payroll ID']) ? String(getProp(item, ['PayrollID', 'payrollId', 'Payroll ID'])) : undefined,
-          createdAt: String(getProp(item, ['CreatedAt', 'createdAt', 'Created At']) || new Date().toISOString()),
-          updatedAt: String(getProp(item, ['UpdatedAt', 'updatedAt', 'Updated At']) || new Date().toISOString())
-        }));
+        return rawData.map(item => {
+          const dateVal = String(getProp(item, ['ExpenseDate', 'expenseDate', 'Date', 'date', 'Expense Date']) || new Date().toISOString().split('T')[0]);
+          const statusVal = (getProp(item, ['PaymentStatus', 'paymentStatus', 'Status', 'status', 'Payment Status']) || 'Pending') as any;
+          const typeVal = (getProp(item, ['ExpenseType', 'expenseType', 'Type', 'type', 'Expense Type']) || 'Variable') as any;
+          const nameVal = String(getProp(item, ['ExpenseName', 'expenseName', 'Name', 'name', 'Expense Name', 'Description']) || '');
+          return {
+            id: String(getProp(item, ['ExpenseID', 'expenseId', 'id', 'Expense ID']) || `EXP-${Date.now()}`),
+            name: nameVal,
+            expenseName: nameVal,
+            category: String(getProp(item, ['Category', 'category']) || 'Miscellaneous'),
+            type: typeVal,
+            expenseType: typeVal,
+            amount: Number(getProp(item, ['Amount', 'amount', 'Cost', 'Total']) || 0),
+            date: dateVal,
+            expenseDate: dateVal,
+            status: statusVal,
+            paymentStatus: statusVal,
+            paymentDate: getProp(item, ['PaymentDate', 'paymentDate', 'Payment Date']) ? String(getProp(item, ['PaymentDate', 'paymentDate', 'Payment Date'])) : undefined,
+            vendor: getProp(item, ['Vendor', 'vendor', 'Payee', 'payee', 'Supplier']) ? String(getProp(item, ['Vendor', 'vendor', 'Payee', 'payee', 'Supplier'])) : undefined,
+            referenceNumber: getProp(item, ['ReferenceNumber', 'referenceNumber', 'Ref #', 'Reference Number', 'ReceiptNo', 'InvoiceNo']) ? String(getProp(item, ['ReferenceNumber', 'referenceNumber', 'Ref #', 'Reference Number', 'ReceiptNo', 'InvoiceNo'])) : undefined,
+            notes: String(getProp(item, ['Notes', 'notes', 'Remarks']) || ''),
+            recurringExpenseId: getProp(item, ['RecurringExpenseID', 'recurringExpenseId', 'Recurring Expense ID']) ? String(getProp(item, ['RecurringExpenseID', 'recurringExpenseId', 'Recurring Expense ID'])) : undefined,
+            payrollId: getProp(item, ['PayrollID', 'payrollId', 'Payroll ID']) ? String(getProp(item, ['PayrollID', 'payrollId', 'Payroll ID'])) : undefined,
+            createdAt: String(getProp(item, ['CreatedAt', 'createdAt', 'Created At']) || new Date().toISOString()),
+            updatedAt: String(getProp(item, ['UpdatedAt', 'updatedAt', 'Updated At']) || new Date().toISOString())
+          };
+        });
       }
       return null;
     } catch (error) {
@@ -2333,11 +2344,38 @@ export const sheetsService = {
     if (!url) return false;
     const cleanedUrl = resolveUrl(url);
     try {
+      const payloadExpense = {
+        ...expense,
+        id: expense.id || `EXP-${Date.now()}`,
+        name: expense.name,
+        expenseName: expense.name,
+        category: expense.category || 'Miscellaneous',
+        amount: Number(expense.amount || 0),
+        date: expense.date || expense.expenseDate || new Date().toISOString().split('T')[0],
+        expenseDate: expense.expenseDate || expense.date || new Date().toISOString().split('T')[0],
+        type: expense.type || expense.expenseType || 'One-Time',
+        expenseType: expense.expenseType || expense.type || 'One-Time',
+        status: expense.status || expense.paymentStatus || 'Paid',
+        paymentStatus: expense.paymentStatus || expense.status || 'Paid',
+        paymentDate: expense.paymentDate || '',
+        vendor: expense.vendor || '',
+        referenceNumber: expense.referenceNumber || '',
+        notes: expense.notes || '',
+        recurringExpenseId: expense.recurringExpenseId || '',
+        payrollId: expense.payrollId || '',
+        createdAt: expense.createdAt || new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      };
+
       await fetch(cleanedUrl, {
         method: 'POST',
         mode: 'no-cors',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'saveExpense', expense })
+        body: JSON.stringify({
+          action: 'saveExpense',
+          expense: payloadExpense,
+          record: payloadExpense
+        })
       });
       return true;
     } catch (error) {
@@ -2353,11 +2391,38 @@ export const sheetsService = {
     if (!url) return false;
     const cleanedUrl = resolveUrl(url);
     try {
+      const normalizedExpenses = expenses.map(e => ({
+        ...e,
+        id: e.id || `EXP-${Date.now()}`,
+        name: e.name,
+        expenseName: e.name,
+        category: e.category || 'Miscellaneous',
+        amount: Number(e.amount || 0),
+        date: e.date || e.expenseDate || new Date().toISOString().split('T')[0],
+        expenseDate: e.expenseDate || e.date || new Date().toISOString().split('T')[0],
+        type: e.type || e.expenseType || 'One-Time',
+        expenseType: e.expenseType || e.type || 'One-Time',
+        status: e.status || e.paymentStatus || 'Paid',
+        paymentStatus: e.paymentStatus || e.status || 'Paid',
+        paymentDate: e.paymentDate || '',
+        vendor: e.vendor || '',
+        referenceNumber: e.referenceNumber || '',
+        notes: e.notes || '',
+        recurringExpenseId: e.recurringExpenseId || '',
+        payrollId: e.payrollId || '',
+        createdAt: e.createdAt || new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      }));
+
       await fetch(cleanedUrl, {
         method: 'POST',
         mode: 'no-cors',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'saveExpensesBatch', expenses })
+        body: JSON.stringify({
+          action: 'saveExpensesBatch',
+          expenses: normalizedExpenses,
+          records: normalizedExpenses
+        })
       });
       return true;
     } catch (error) {
@@ -2377,7 +2442,11 @@ export const sheetsService = {
         method: 'POST',
         mode: 'no-cors',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'deleteExpense', expenseId })
+        body: JSON.stringify({
+          action: 'deleteExpense',
+          expenseId,
+          id: expenseId
+        })
       });
       return true;
     } catch (error) {
@@ -2448,7 +2517,7 @@ export const sheetsService = {
       if (!response.ok) return null;
       const rawData = await response.json();
       if (Array.isArray(rawData)) {
-        return rawData.map(item => {
+        const rules = rawData.map(item => {
           const rawMonths = getProp(item, ['SpecificMonthsJSON', 'specificMonths', 'Specific Months', 'MonthsJSON']);
           let specificMonths: number[] | undefined = undefined;
           if (Array.isArray(rawMonths)) {
@@ -2462,14 +2531,23 @@ export const sheetsService = {
             }
           }
 
+          const rawId = getProp(item, ['RecurringExpenseID', 'recurringExpenseId', 'id', 'Recurring Expense ID']);
+          const rawName = String(getProp(item, ['ExpenseName', 'expenseName', 'Name', 'name', 'Expense Name', 'Description']) || '').trim();
+          const rawCat = String(getProp(item, ['Category', 'category']) || 'Miscellaneous').trim();
+          const rawAmt = Number(getProp(item, ['Amount', 'amount', 'Cost']) || 0);
+          const rawStart = String(getProp(item, ['StartDate', 'startDate', 'Start Date']) || new Date().toISOString().split('T')[0]).trim();
+          const stableFallbackId = `REC-EXP-${rawName.toLowerCase().replace(/[^a-z0-9]/g, '') || 'item'}-${rawAmt}-${rawStart.slice(0, 7)}`;
+          const id = String(rawId || stableFallbackId);
+
           return {
-            id: String(getProp(item, ['RecurringExpenseID', 'recurringExpenseId', 'id', 'Recurring Expense ID']) || `REC-EXP-${Date.now()}`),
-            name: String(getProp(item, ['ExpenseName', 'expenseName', 'Name', 'name', 'Expense Name', 'Description']) || ''),
-            category: String(getProp(item, ['Category', 'category']) || 'Miscellaneous'),
-            amount: Number(getProp(item, ['Amount', 'amount', 'Cost']) || 0),
+            id,
+            name: rawName,
+            category: rawCat,
+            amount: rawAmt,
             frequency: (getProp(item, ['Frequency', 'frequency']) || 'Monthly') as any,
-            startDate: String(getProp(item, ['StartDate', 'startDate', 'Start Date']) || new Date().toISOString().split('T')[0]),
+            startDate: rawStart,
             endDate: getProp(item, ['EndDate', 'endDate', 'End Date']) ? String(getProp(item, ['EndDate', 'endDate', 'End Date'])) : undefined,
+            durationMonths: getProp(item, ['DurationMonths', 'durationMonths', 'Duration', 'Duration (Months)']) ? Number(getProp(item, ['DurationMonths', 'durationMonths', 'Duration', 'Duration (Months)'])) : undefined,
             paymentsPerYear: Number(getProp(item, ['PaymentsPerYear', 'paymentsPerYear', 'Payments Per Year']) || 12),
             specificMonths,
             status: (getProp(item, ['Status', 'status']) || 'Active') as any,
@@ -2478,6 +2556,7 @@ export const sheetsService = {
             updatedAt: String(getProp(item, ['UpdatedAt', 'updatedAt', 'Updated At']) || new Date().toISOString())
           };
         });
+        return deduplicateRecurringExpenses(rules);
       }
       return null;
     } catch (error) {
@@ -2493,11 +2572,36 @@ export const sheetsService = {
     if (!url) return false;
     const cleanedUrl = resolveUrl(url);
     try {
+      const payloadRule = {
+        ...rule,
+        id: rule.id || `REC-EXP-${Date.now()}`,
+        name: rule.name,
+        expenseName: rule.name,
+        category: rule.category || 'Miscellaneous',
+        amount: Number(rule.amount || 0),
+        frequency: rule.frequency || 'Monthly',
+        startDate: rule.startDate || new Date().toISOString().split('T')[0],
+        endDate: rule.endDate || '',
+        durationMonths: rule.durationMonths,
+        paymentsPerYear: rule.paymentsPerYear || 12,
+        specificMonths: rule.specificMonths,
+        status: rule.status || 'Active',
+        notes: rule.notes || '',
+        createdAt: rule.createdAt || new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      };
+
       await fetch(cleanedUrl, {
         method: 'POST',
         mode: 'no-cors',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'saveRecurringExpense', rule })
+        body: JSON.stringify({
+          action: 'saveRecurringExpense',
+          rule: payloadRule,
+          recurring: payloadRule,
+          recurringExpense: payloadRule,
+          expense: payloadRule
+        })
       });
       return true;
     } catch (error) {
@@ -2513,11 +2617,35 @@ export const sheetsService = {
     if (!url) return false;
     const cleanedUrl = resolveUrl(url);
     try {
+      const normalizedRules = rules.map(rule => ({
+        ...rule,
+        id: rule.id || `REC-EXP-${Date.now()}`,
+        name: rule.name,
+        expenseName: rule.name,
+        category: rule.category || 'Miscellaneous',
+        amount: Number(rule.amount || 0),
+        frequency: rule.frequency || 'Monthly',
+        startDate: rule.startDate || new Date().toISOString().split('T')[0],
+        endDate: rule.endDate || '',
+        durationMonths: rule.durationMonths,
+        paymentsPerYear: rule.paymentsPerYear || 12,
+        specificMonths: rule.specificMonths,
+        status: rule.status || 'Active',
+        notes: rule.notes || '',
+        createdAt: rule.createdAt || new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      }));
+
       await fetch(cleanedUrl, {
         method: 'POST',
         mode: 'no-cors',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'saveRecurringExpensesBatch', rules })
+        body: JSON.stringify({
+          action: 'saveRecurringExpensesBatch',
+          rules: normalizedRules,
+          recurringExpenses: normalizedRules,
+          list: normalizedRules
+        })
       });
       return true;
     } catch (error) {
@@ -2537,7 +2665,13 @@ export const sheetsService = {
         method: 'POST',
         mode: 'no-cors',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'deleteRecurringExpense', ruleId })
+        body: JSON.stringify({
+          action: 'deleteRecurringExpense',
+          ruleId,
+          recurringId: ruleId,
+          recurringExpenseId: ruleId,
+          id: ruleId
+        })
       });
       return true;
     } catch (error) {
@@ -3038,23 +3172,33 @@ export const sheetsService = {
       // Extract Expenses
       let expenses: ExpenseRecord[] | null = null;
       if (Array.isArray(raw.expenses)) {
-        expenses = raw.expenses.map((item: any) => ({
-          id: String(getProp(item, ['ExpenseID', 'expenseId', 'id', 'Expense ID']) || `EXP-${Date.now()}`),
-          name: String(getProp(item, ['ExpenseName', 'expenseName', 'Name', 'name', 'Expense Name', 'Description']) || ''),
-          category: String(getProp(item, ['Category', 'category']) || 'Miscellaneous'),
-          type: (getProp(item, ['ExpenseType', 'expenseType', 'Type', 'type', 'Expense Type']) || 'Variable') as any,
-          amount: Number(getProp(item, ['Amount', 'amount', 'Cost', 'Total']) || 0),
-          date: String(getProp(item, ['ExpenseDate', 'expenseDate', 'Date', 'date', 'Expense Date']) || new Date().toISOString().split('T')[0]),
-          status: (getProp(item, ['PaymentStatus', 'paymentStatus', 'Status', 'status', 'Payment Status']) || 'Pending') as any,
-          paymentDate: getProp(item, ['PaymentDate', 'paymentDate', 'Payment Date']) ? String(getProp(item, ['PaymentDate', 'paymentDate', 'Payment Date'])) : undefined,
-          vendor: getProp(item, ['Vendor', 'vendor', 'Payee', 'payee', 'Supplier']) ? String(getProp(item, ['Vendor', 'vendor', 'Payee', 'payee', 'Supplier'])) : undefined,
-          referenceNumber: getProp(item, ['ReferenceNumber', 'referenceNumber', 'Ref #', 'Reference Number', 'ReceiptNo', 'InvoiceNo']) ? String(getProp(item, ['ReferenceNumber', 'referenceNumber', 'Ref #', 'Reference Number', 'ReceiptNo', 'InvoiceNo'])) : undefined,
-          notes: String(getProp(item, ['Notes', 'notes', 'Remarks']) || ''),
-          recurringExpenseId: getProp(item, ['RecurringExpenseID', 'recurringExpenseId', 'Recurring Expense ID']) ? String(getProp(item, ['RecurringExpenseID', 'recurringExpenseId', 'Recurring Expense ID'])) : undefined,
-          payrollId: getProp(item, ['PayrollID', 'payrollId', 'Payroll ID']) ? String(getProp(item, ['PayrollID', 'payrollId', 'Payroll ID'])) : undefined,
-          createdAt: String(getProp(item, ['CreatedAt', 'createdAt', 'Created At']) || new Date().toISOString()),
-          updatedAt: String(getProp(item, ['UpdatedAt', 'updatedAt', 'Updated At']) || new Date().toISOString())
-        }));
+        expenses = raw.expenses.map((item: any) => {
+          const dateVal = String(getProp(item, ['ExpenseDate', 'expenseDate', 'Date', 'date', 'Expense Date']) || new Date().toISOString().split('T')[0]);
+          const statusVal = (getProp(item, ['PaymentStatus', 'paymentStatus', 'Status', 'status', 'Payment Status']) || 'Pending') as any;
+          const typeVal = (getProp(item, ['ExpenseType', 'expenseType', 'Type', 'type', 'Expense Type']) || 'Variable') as any;
+          const nameVal = String(getProp(item, ['ExpenseName', 'expenseName', 'Name', 'name', 'Expense Name', 'Description']) || '');
+          return {
+            id: String(getProp(item, ['ExpenseID', 'expenseId', 'id', 'Expense ID']) || `EXP-${Date.now()}`),
+            name: nameVal,
+            expenseName: nameVal,
+            category: String(getProp(item, ['Category', 'category']) || 'Miscellaneous'),
+            type: typeVal,
+            expenseType: typeVal,
+            amount: Number(getProp(item, ['Amount', 'amount', 'Cost', 'Total']) || 0),
+            date: dateVal,
+            expenseDate: dateVal,
+            status: statusVal,
+            paymentStatus: statusVal,
+            paymentDate: getProp(item, ['PaymentDate', 'paymentDate', 'Payment Date']) ? String(getProp(item, ['PaymentDate', 'paymentDate', 'Payment Date'])) : undefined,
+            vendor: getProp(item, ['Vendor', 'vendor', 'Payee', 'payee', 'Supplier']) ? String(getProp(item, ['Vendor', 'vendor', 'Payee', 'payee', 'Supplier'])) : undefined,
+            referenceNumber: getProp(item, ['ReferenceNumber', 'referenceNumber', 'Ref #', 'Reference Number', 'ReceiptNo', 'InvoiceNo']) ? String(getProp(item, ['ReferenceNumber', 'referenceNumber', 'Ref #', 'Reference Number', 'ReceiptNo', 'InvoiceNo'])) : undefined,
+            notes: String(getProp(item, ['Notes', 'notes', 'Remarks']) || ''),
+            recurringExpenseId: getProp(item, ['RecurringExpenseID', 'recurringExpenseId', 'Recurring Expense ID']) ? String(getProp(item, ['RecurringExpenseID', 'recurringExpenseId', 'Recurring Expense ID'])) : undefined,
+            payrollId: getProp(item, ['PayrollID', 'payrollId', 'Payroll ID']) ? String(getProp(item, ['PayrollID', 'payrollId', 'Payroll ID'])) : undefined,
+            createdAt: String(getProp(item, ['CreatedAt', 'createdAt', 'Created At']) || new Date().toISOString()),
+            updatedAt: String(getProp(item, ['UpdatedAt', 'updatedAt', 'Updated At']) || new Date().toISOString())
+          };
+        });
       }
 
       // Extract Expense Categories
@@ -3085,14 +3229,23 @@ export const sheetsService = {
             }
           }
 
+          const rawId = getProp(item, ['RecurringExpenseID', 'recurringExpenseId', 'id', 'Recurring Expense ID']);
+          const rawName = String(getProp(item, ['ExpenseName', 'expenseName', 'Name', 'name', 'Expense Name', 'Description']) || '').trim();
+          const rawCat = String(getProp(item, ['Category', 'category']) || 'Miscellaneous').trim();
+          const rawAmt = Number(getProp(item, ['Amount', 'amount', 'Cost']) || 0);
+          const rawStart = String(getProp(item, ['StartDate', 'startDate', 'Start Date']) || new Date().toISOString().split('T')[0]).trim();
+          const stableFallbackId = `REC-EXP-${rawName.toLowerCase().replace(/[^a-z0-9]/g, '') || 'item'}-${rawAmt}-${rawStart.slice(0, 7)}`;
+          const id = String(rawId || stableFallbackId);
+
           return {
-            id: String(getProp(item, ['RecurringExpenseID', 'recurringExpenseId', 'id', 'Recurring Expense ID']) || `REC-EXP-${Date.now()}`),
-            name: String(getProp(item, ['ExpenseName', 'expenseName', 'Name', 'name', 'Expense Name', 'Description']) || ''),
-            category: String(getProp(item, ['Category', 'category']) || 'Miscellaneous'),
-            amount: Number(getProp(item, ['Amount', 'amount', 'Cost']) || 0),
+            id,
+            name: rawName,
+            category: rawCat,
+            amount: rawAmt,
             frequency: (getProp(item, ['Frequency', 'frequency']) || 'Monthly') as any,
-            startDate: String(getProp(item, ['StartDate', 'startDate', 'Start Date']) || new Date().toISOString().split('T')[0]),
+            startDate: rawStart,
             endDate: getProp(item, ['EndDate', 'endDate', 'End Date']) ? String(getProp(item, ['EndDate', 'endDate', 'End Date'])) : undefined,
+            durationMonths: getProp(item, ['DurationMonths', 'durationMonths', 'Duration', 'Duration (Months)']) ? Number(getProp(item, ['DurationMonths', 'durationMonths', 'Duration', 'Duration (Months)'])) : undefined,
             paymentsPerYear: Number(getProp(item, ['PaymentsPerYear', 'paymentsPerYear', 'Payments Per Year']) || 12),
             specificMonths,
             status: (getProp(item, ['Status', 'status']) || 'Active') as any,
@@ -3101,6 +3254,7 @@ export const sheetsService = {
             updatedAt: String(getProp(item, ['UpdatedAt', 'updatedAt', 'Updated At']) || new Date().toISOString())
           };
         });
+        recurringExpenses = deduplicateRecurringExpenses(recurringExpenses);
       }
 
       return {
