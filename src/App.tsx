@@ -28,12 +28,13 @@ import {
   ExpenseRecord,
   ExpenseCategory,
   RecurringExpenseRule,
+  SalesGoalRecord,
   getDisplayPurchaserName
 } from './types';
 import { INITIAL_PRODUCTS, INITIAL_COMPANIES, INITIAL_ORDERS, INITIAL_PORTALS } from './data/mockData';
 import { INITIAL_CATALOG_PRODUCTS, INITIAL_QUOTE_ENQUIRIES, sanitizeCatalogProduct } from './data/initialCatalog';
 import { INITIAL_JOBS, DEFAULT_JOB_COLUMNS, DEFAULT_JOB_ITEM_COLUMNS, createJobFromOrder } from './data/initialJobs';
-import { INITIAL_STAFF_MEMBERS, INITIAL_STAFF_ACCOUNTS, INITIAL_ATTENDANCE_RECORDS, generateAttendanceId } from './data/initialFinance';
+import { INITIAL_STAFF_MEMBERS, INITIAL_STAFF_ACCOUNTS, INITIAL_ATTENDANCE_RECORDS, INITIAL_SALES_GOALS, generateAttendanceId } from './data/initialFinance';
 import {
   formatLocalDate,
   normalizeAttendanceDate,
@@ -44,7 +45,7 @@ import {
   cleanClockIn
 } from './utils/attendanceUtils';
 import { DEFAULT_QUOTE_NOTES } from './constants/quoteDefaults';
-import { sheetsService } from './lib/sheetsService';
+import { sheetsService, deduplicateSalesGoals } from './lib/sheetsService';
 import { EMBEDDED_APPS_SCRIPT_URL } from './config';
 import { deduplicateRecurringExpenses } from './utils/financeCalculations';
 import Header from './components/Header';
@@ -469,6 +470,21 @@ export default function App() {
     return [];
   });
 
+  const [salesGoals, setSalesGoals] = useState<SalesGoalRecord[]>(() => {
+    const cached = localStorage.getItem('rp_sales_goals');
+    if (cached) {
+      try {
+        const parsed = JSON.parse(cached);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return deduplicateSalesGoals(parsed);
+        }
+      } catch {
+        // fallback
+      }
+    }
+    return INITIAL_SALES_GOALS;
+  });
+
   const [expenseCategories, setExpenseCategories] = useState<ExpenseCategory[]>(() => {
     const cached = localStorage.getItem('rp_expense_categories');
     if (cached) {
@@ -559,6 +575,10 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('rp_expense_categories', JSON.stringify(expenseCategories));
   }, [expenseCategories]);
+
+  useEffect(() => {
+    localStorage.setItem('rp_sales_goals', JSON.stringify(salesGoals));
+  }, [salesGoals]);
 
   const handleMarkNotificationAsRead = (id: string) => {
     setNotifications(prev => prev.map(n => n.id === id ? { ...n, read: true } : n));
@@ -1250,6 +1270,7 @@ export default function App() {
         let fetchedExpenses = allData?.expenses ?? null;
         let fetchedExpenseCategories = allData?.expenseCategories ?? null;
         let fetchedRecurringExpenses = allData?.recurringExpenses ?? null;
+        let fetchedSalesGoals = allData?.salesGoals ?? null;
         let fetchedStaffAccounts = allData?.staffAccounts ?? null;
         let fetchedAttendance = allData?.attendance ?? null;
 
@@ -1272,6 +1293,7 @@ export default function App() {
             fetchedExpenses,
             fetchedExpenseCategories,
             fetchedRecurringExpenses,
+            fetchedSalesGoals,
             fetchedStaffAccounts,
             fetchedAttendance
           ] = await Promise.all([
@@ -1291,6 +1313,7 @@ export default function App() {
             sheetsService.fetchExpenses(url).catch(() => null),
             sheetsService.fetchExpenseCategories(url).catch(() => null),
             sheetsService.fetchRecurringExpenses(url).catch(() => null),
+            sheetsService.fetchSalesGoals(url).catch(() => null),
             sheetsService.fetchStaffAccounts(url).catch(() => null),
             sheetsService.fetchAttendance(url).catch(() => null)
           ]);
@@ -1934,6 +1957,31 @@ export default function App() {
               seenStaffDates.add(staffDateKey);
               return true;
             });
+          });
+        }
+
+        // Process Sales Goals
+        if (fetchedSalesGoals !== null && Array.isArray(fetchedSalesGoals)) {
+          setSalesGoals(prevGoals => {
+            const cleanFetched = deduplicateSalesGoals(fetchedSalesGoals);
+            const fetchedMap = new Map(cleanFetched.map(g => [g.year, g]));
+            const now = Date.now();
+
+            const mergedExisting = prevGoals.map(localGoal => {
+              const serverGoal = fetchedMap.get(localGoal.year);
+              if (!serverGoal) return localGoal;
+              const localUpdated = new Date(localGoal.updatedAt || 0).getTime();
+              const serverUpdated = new Date(serverGoal.updatedAt || 0).getTime();
+              if (!isNaN(localUpdated) && (now - localUpdated < 20000) && localUpdated > serverUpdated) {
+                return localGoal;
+              }
+              return serverGoal;
+            });
+
+            const prevYears = new Set(prevGoals.map(g => g.year));
+            const newServerGoals = cleanFetched.filter(g => !prevYears.has(g.year));
+            const merged = [...mergedExisting, ...newServerGoals];
+            return deduplicateSalesGoals(merged);
           });
         }
 
@@ -2718,10 +2766,40 @@ export default function App() {
       if (recurringExpenses && recurringExpenses.length > 0) {
         await sheetsService.saveRecurringExpensesBatch(url, recurringExpenses);
       }
+      // 14. Sync management sales goals
+      if (salesGoals && salesGoals.length > 0) {
+        await sheetsService.saveSalesGoalsBatch(url, salesGoals);
+      }
       return true;
     } catch (e) {
       console.warn('Force sync notice:', e);
       return false;
+    }
+  };
+
+  // Sales Goals Handlers
+  const handleSaveSalesGoal = async (goal: SalesGoalRecord) => {
+    const updatedRecord: SalesGoalRecord = {
+      ...goal,
+      updatedAt: new Date().toISOString(),
+      updatedBy: loggedInUser?.name || loggedInUser?.username || 'Admin'
+    };
+
+    setSalesGoals(prev => {
+      const filtered = prev.filter(g => g.year !== updatedRecord.year);
+      return deduplicateSalesGoals([updatedRecord, ...filtered]);
+    });
+
+    if (appsScriptConfig.isConnected && appsScriptConfig.webAppUrl) {
+      await sheetsService.saveSalesGoal(appsScriptConfig.webAppUrl, updatedRecord);
+    }
+  };
+
+  const handleDeleteSalesGoal = async (year: number) => {
+    setSalesGoals(prev => prev.filter(g => g.year !== year));
+
+    if (appsScriptConfig.isConnected && appsScriptConfig.webAppUrl) {
+      await sheetsService.deleteSalesGoal(appsScriptConfig.webAppUrl, year);
     }
   };
 
@@ -3929,6 +4007,9 @@ export default function App() {
                 expenses={expenses}
                 recurringExpenses={recurringExpenses}
                 expenseCategories={expenseCategories}
+                salesGoals={salesGoals}
+                onSaveSalesGoal={handleSaveSalesGoal}
+                onDeleteSalesGoal={handleDeleteSalesGoal}
                 onSaveStaff={handleSaveStaff}
                 onSaveStaffBatch={handleSaveStaffBatch}
                 onDeleteStaff={handleDeleteStaff}

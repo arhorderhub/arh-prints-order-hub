@@ -10,7 +10,8 @@ import {
   PayrollRecord,
   ExpenseCategory,
   ExpenseRecord,
-  RecurringExpenseRule
+  RecurringExpenseRule,
+  SalesGoalRecord
 } from '../types';
 
 export const DEFAULT_EXPENSE_CATEGORIES: ExpenseCategory[] = [
@@ -676,3 +677,19 @@ export function generateAttendanceId(existingOrStaffId?: AttendanceRecord[] | st
   let count = existingRecords.filter(r => (r.id || '').includes(dateStr)).length + 1;
   return `ATT-${dateStr}-${String(count).padStart(2, '0')}`;
 }
+
+export const INITIAL_SALES_GOALS: SalesGoalRecord[] = [
+  {
+    id: 'SG-2026',
+    year: 2026,
+    annualGoal: 6000000,
+    q1Goal: 1200000,
+    q2Goal: 1500000,
+    q3Goal: 1800000,
+    q4Goal: 1500000,
+    notes: '2026 Management Sales Target (Annual: ₱6.0M, Q1: ₱1.2M, Q2: ₱1.5M, Q3: ₱1.8M, Q4: ₱1.5M)',
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+    updatedBy: 'Admin'
+  }
+];
