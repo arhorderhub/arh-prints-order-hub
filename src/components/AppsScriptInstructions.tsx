@@ -611,7 +611,7 @@ function seedDefaultJobColumns(ss) {
     { id: "col-date-added", name: "Date Added", type: "date", position: 4, required: false, isSystemField: false, isHidden: false, options: [], createdDate: "2026-08-01T00:00:00.000Z" },
     { id: "col-in-hand-date", name: "In-Hand Date", type: "date", position: 5, required: false, isSystemField: false, isHidden: false, options: [], createdDate: "2026-08-01T00:00:00.000Z" },
     { id: "col-artwork-link", name: "Artwork Link", type: "link", position: 6, required: false, isSystemField: false, isHidden: false, options: [], createdDate: "2026-08-01T00:00:00.000Z" },
-    { id: "col-designer", name: "Designer", type: "person", position: 7, required: false, isSystemField: false, isHidden: false, options: ["Regie", "Alex M.", "Sarah K.", "Production Team"], createdDate: "2026-08-01T00:00:00.000Z" },
+    { id: "col-designer", name: "Account Manager", type: "person", position: 7, required: false, isSystemField: false, isHidden: false, options: [], createdDate: "2026-08-01T00:00:00.000Z" },
     { id: "col-priority", name: "Priority", type: "dropdown", position: 8, required: false, isSystemField: false, isHidden: false, options: ["Urgent", "High", "Normal", "Low"], createdDate: "2026-08-01T00:00:00.000Z" },
     { id: "col-notes", name: "Notes", type: "long_text", position: 9, required: false, isSystemField: false, isHidden: false, options: [], createdDate: "2026-08-01T00:00:00.000Z" }
   ];

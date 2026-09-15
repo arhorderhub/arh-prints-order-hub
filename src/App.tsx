@@ -377,7 +377,10 @@ export default function App() {
       if (!Array.isArray(parsed)) return DEFAULT_JOB_COLUMNS;
       const map = new Map<string, JobColumn>();
       for (const col of parsed) {
-        if (col && col.id) map.set(col.id, col);
+        if (col && col.id) {
+          const normalized = col.id === 'col-designer' ? { ...col, name: 'Account Manager' } : col;
+          map.set(col.id, normalized);
+        }
       }
       return Array.from(map.values());
     } catch {
@@ -1579,7 +1582,10 @@ export default function App() {
           if (fetchedJobColumns.length > 0) {
             const map = new Map<string, JobColumn>();
             for (const col of fetchedJobColumns) {
-              if (col && col.id) map.set(col.id, col);
+              if (col && col.id) {
+                const normalized = col.id === 'col-designer' ? { ...col, name: 'Account Manager' } : col;
+                map.set(col.id, normalized);
+              }
             }
             const deduped = Array.from(map.values());
             setJobColumns(deduped);
@@ -3945,6 +3951,8 @@ export default function App() {
                 currentUser={loggedInUser}
                 staffMember={staff.find(s => s.id === loggedInUser.staffId || s.fullName.toLowerCase() === (loggedInUser.name || '').toLowerCase())}
                 staffAccount={staffAccounts.find(sa => sa.id === loggedInUser.accountId || sa.staffId === loggedInUser.staffId || sa.username === loggedInUser.username)}
+                staff={staff}
+                staffAccounts={staffAccounts}
                 attendanceRecords={attendance}
                 payrollRecords={payroll}
                 jobs={jobs}

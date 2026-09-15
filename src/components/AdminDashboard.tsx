@@ -938,6 +938,8 @@ export default function AdminDashboard({
           jobItemColumns={jobItemColumns}
           companies={companies}
           orders={orders}
+          staff={staff}
+          staffAccounts={staffAccounts}
           onSaveJob={onSaveJob || (() => {})}
           onUpdateJobStatus={onUpdateJobStatus || (() => {})}
           onDeleteJob={onDeleteJob || (() => {})}
