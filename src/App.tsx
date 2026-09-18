@@ -65,6 +65,7 @@ import OrderPortals from './components/OrderPortals';
 import PublicOrderPortal from './components/PublicOrderPortal';
 import { getProductUnitPrice } from './utils/pricing';
 import { getItemColorImage } from './utils/colorUtils';
+import { cleanProfilePictureUrl } from './utils/staffAvatarUtils';
 import { Check, AlertCircle, ShoppingBag, ArrowRight, Printer, RefreshCw, Store } from 'lucide-react';
 
 function getThemeStyles(colorHex: string) {
@@ -775,6 +776,48 @@ export default function App() {
       sessionStorage.removeItem('rp_logged_in_user');
     }
   }, [loggedInUser]);
+
+  // Synchronize logged-in user profile avatar with latest staff and staffAccounts records
+  // (ensures avatar updates immediately after refresh, sheets sync, or edit)
+  useEffect(() => {
+    if (!loggedInUser) return;
+
+    if (loggedInUser.role === 'staff') {
+      const matchedStaff = staff.find(s =>
+        (loggedInUser.staffId && s.id.toLowerCase() === loggedInUser.staffId.toLowerCase()) ||
+        (loggedInUser.name && s.fullName.toLowerCase() === loggedInUser.name.toLowerCase())
+      );
+      const matchedAccount = staffAccounts.find(a =>
+        (loggedInUser.accountId && a.id.toLowerCase() === loggedInUser.accountId.toLowerCase()) ||
+        (loggedInUser.staffId && a.staffId && a.staffId.toLowerCase() === loggedInUser.staffId.toLowerCase()) ||
+        (loggedInUser.username && a.username.toLowerCase() === loggedInUser.username.toLowerCase()) ||
+        (loggedInUser.name && a.name && a.name.toLowerCase() === loggedInUser.name.toLowerCase())
+      );
+
+      const latestPic =
+        cleanProfilePictureUrl(matchedAccount?.profilePictureUrl) ||
+        cleanProfilePictureUrl(matchedAccount?.avatarUrl) ||
+        cleanProfilePictureUrl(matchedStaff?.profilePictureUrl) ||
+        cleanProfilePictureUrl(matchedStaff?.avatarUrl);
+
+      if (latestPic && latestPic !== loggedInUser.profilePictureUrl) {
+        setLoggedInUser(prev => prev ? { ...prev, profilePictureUrl: latestPic, avatarUrl: latestPic } : null);
+      }
+    } else if (loggedInUser.role === 'admin') {
+      const adminAccount = staffAccounts.find(a =>
+        a.role === 'Admin' &&
+        ((loggedInUser.name && a.name.toLowerCase() === loggedInUser.name.toLowerCase()) ||
+         (loggedInUser.username && a.username.toLowerCase() === loggedInUser.username.toLowerCase()))
+      );
+      const latestPic =
+        cleanProfilePictureUrl(adminAccount?.profilePictureUrl) ||
+        cleanProfilePictureUrl(adminAccount?.avatarUrl);
+
+      if (latestPic && latestPic !== loggedInUser.profilePictureUrl) {
+        setLoggedInUser(prev => prev ? { ...prev, profilePictureUrl: latestPic, avatarUrl: latestPic } : null);
+      }
+    }
+  }, [staff, staffAccounts, loggedInUser?.staffId, loggedInUser?.accountId, loggedInUser?.username, loggedInUser?.name, loggedInUser?.role]);
 
   // Active Selected Company (Admin can change this to preview catalog, client is locked to their profile)
   const [selectedCompanyId, setSelectedCompanyId] = useState<string>(() => {
@@ -2389,6 +2432,20 @@ export default function App() {
       }
       return [updated, ...prev];
     });
+
+    // Keep logged-in user profile avatar in sync if editing self
+    setLoggedInUser(prev => {
+      if (
+        prev &&
+        (prev.staffId === updated.id ||
+         (prev.name && prev.name.toLowerCase() === updated.fullName.toLowerCase()))
+      ) {
+        const pic = cleanProfilePictureUrl(updated.profilePictureUrl) || cleanProfilePictureUrl(updated.avatarUrl);
+        return { ...prev, name: updated.fullName, profilePictureUrl: pic, avatarUrl: pic };
+      }
+      return prev;
+    });
+
     if (appsScriptConfig.isConnected && appsScriptConfig.webAppUrl) {
       sheetsService.saveStaff(appsScriptConfig.webAppUrl, updated).catch(err => console.warn('Save staff sync notice:', err));
     }
@@ -3056,12 +3113,17 @@ export default function App() {
     staffInfo?: { staffId: string; accountId: string; name: string; username: string }
   ) => {
     if (role === 'staff' && staffInfo) {
+      const matchedAcc = staffAccounts.find(a => a.id === staffInfo.accountId || a.username === staffInfo.username);
+      const matchedStaff = staff.find(s => s.id === staffInfo.staffId || s.fullName.toLowerCase() === staffInfo.name.toLowerCase());
+      const pic = matchedStaff?.profilePictureUrl || matchedStaff?.avatarUrl || matchedAcc?.profilePictureUrl || matchedAcc?.avatarUrl;
       setLoggedInUser({
         role: 'staff',
         staffId: staffInfo.staffId,
         accountId: staffInfo.accountId,
         name: staffInfo.name,
-        username: staffInfo.username
+        username: staffInfo.username,
+        profilePictureUrl: pic,
+        avatarUrl: pic
       });
       setActiveTab('dashboard');
     } else {
@@ -3184,6 +3246,28 @@ export default function App() {
       }
       return [account, ...prev];
     });
+
+    // Keep logged-in user profile avatar in sync if editing self
+    setLoggedInUser(prev => {
+      if (
+        prev &&
+        (prev.accountId === account.id ||
+         (prev.username && prev.username.toLowerCase() === account.username?.toLowerCase()) ||
+         (account.staffId && prev.staffId === account.staffId) ||
+         (account.name && prev.name && account.name.toLowerCase() === prev.name.toLowerCase()))
+      ) {
+        const pic = cleanProfilePictureUrl(account.profilePictureUrl) || cleanProfilePictureUrl(account.avatarUrl);
+        return {
+          ...prev,
+          name: account.name || prev.name,
+          username: account.username || prev.username,
+          profilePictureUrl: pic,
+          avatarUrl: pic
+        };
+      }
+      return prev;
+    });
+
     if (appsScriptConfig.isConnected && appsScriptConfig.webAppUrl) {
       sheetsService.saveStaffAccount(appsScriptConfig.webAppUrl, account);
     }

@@ -11,6 +11,15 @@ import { DEFAULT_QUOTE_NOTES } from '../constants/quoteDefaults';
 import { EMBEDDED_APPS_SCRIPT_URL } from '../config';
 import { deduplicateRecurringExpenses } from '../utils/financeCalculations';
 import { parseYearMonth } from '../utils/financeFilters';
+import { cleanProfilePictureUrl } from '../utils/staffAvatarUtils';
+
+const AVATAR_KEYS = [
+  'ProfilePictureUrl', 'profilePictureUrl', 'Profile Picture URL', 'ProfilePictureURL',
+  'Profile Picture', 'ProfilePicture', 'ProfilePic', 'Profile Pic',
+  'Avatar URL', 'AvatarURL', 'avatarUrl', 'Avatar', 'avatar',
+  'ProfileImage', 'Profile Image', 'Photo', 'Picture', 'Image',
+  'StaffPhoto', 'Staff Photo', 'AccountPhoto', 'Account Photo'
+];
 
 function normalizeDateStr(raw?: any): string | undefined {
   if (!raw) return undefined;
@@ -472,6 +481,8 @@ export const sheetsService = {
             status = isPortalOrder ? 'Pending Approval' : 'Pending';
           } else if (status === 'Pending Confirmation' || status === 'Pending Review') {
             status = 'Pending Approval';
+          } else if (status === 'To Ship / To Deliver / To Pickup') {
+            status = 'Shipped';
           }
 
           return {
@@ -1396,7 +1407,7 @@ export const sheetsService = {
           orderId: getProp(item, ['OrderID', 'orderId', 'Order ID']) ? String(getProp(item, ['OrderID', 'orderId', 'Order ID'])) : undefined,
           orderNumber: getProp(item, ['OrderNumber', 'orderNumber', 'Order Number']) ? String(getProp(item, ['OrderNumber', 'orderNumber', 'Order Number'])) : undefined,
           source: (getProp(item, ['Source', 'source']) || 'Manual') as any,
-          status: (getProp(item, ['Status', 'status']) || 'Pending') as any,
+          status: ((raw => String(raw).trim() === 'To Ship / To Deliver / To Pickup' ? 'Shipped' : raw)(getProp(item, ['Status', 'status']) || 'Pending')) as any,
           position: Number(getProp(item, ['Position', 'position']) || 0),
           values: parseObjectProp(getProp(item, ['ValuesJSON', 'values', 'Values', 'valuesJSON'])) || {},
           items: parseJobItems(getProp(item, ['ItemsJSON', 'items', 'Items'])),
@@ -1929,6 +1940,8 @@ export const sheetsService = {
           breakMinutes: getProp(item, ['BreakMinutes', 'breakMinutes', 'Break Minutes', 'BreakDuration']) !== undefined
             ? Number(getProp(item, ['BreakMinutes', 'breakMinutes', 'Break Minutes', 'BreakDuration']))
             : 60,
+          profilePictureUrl: cleanProfilePictureUrl(getProp(item, AVATAR_KEYS)),
+          avatarUrl: cleanProfilePictureUrl(getProp(item, AVATAR_KEYS)),
           createdAt: String(getProp(item, ['CreatedAt', 'createdAt', 'Created At']) || new Date().toISOString()),
           updatedAt: String(getProp(item, ['UpdatedAt', 'updatedAt', 'Updated At']) || new Date().toISOString())
         }));
@@ -1947,11 +1960,19 @@ export const sheetsService = {
     if (!url) return false;
     const cleanedUrl = resolveUrl(url);
     try {
+      const pic = cleanProfilePictureUrl(staff.profilePictureUrl || staff.avatarUrl) || '';
       await fetch(cleanedUrl, {
         method: 'POST',
         mode: 'no-cors',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'saveStaff', staff })
+        body: JSON.stringify({
+          action: 'saveStaff',
+          staff: {
+            ...staff,
+            profilePictureUrl: pic,
+            avatarUrl: pic
+          }
+        })
       });
       return true;
     } catch (error) {
@@ -1967,11 +1988,19 @@ export const sheetsService = {
     if (!url) return false;
     const cleanedUrl = resolveUrl(url);
     try {
+      const sanitized = staffMembers.map(s => {
+        const pic = cleanProfilePictureUrl(s.profilePictureUrl || s.avatarUrl) || '';
+        return {
+          ...s,
+          profilePictureUrl: pic,
+          avatarUrl: pic
+        };
+      });
       await fetch(cleanedUrl, {
         method: 'POST',
         mode: 'no-cors',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'saveStaffBatch', staffMembers })
+        body: JSON.stringify({ action: 'saveStaffBatch', staffMembers: sanitized })
       });
       return true;
     } catch (error) {
@@ -2030,7 +2059,8 @@ export const sheetsService = {
           temporaryPassword: getProp(item, ['TemporaryPassword', 'temporaryPassword']) ? String(getProp(item, ['TemporaryPassword', 'temporaryPassword'])) : undefined,
           email: getProp(item, ['Email', 'email']) ? String(getProp(item, ['Email', 'email'])) : undefined,
           phone: getProp(item, ['Phone', 'phone', 'ContactNumber']) ? String(getProp(item, ['Phone', 'phone', 'ContactNumber'])) : undefined,
-          avatarUrl: getProp(item, ['AvatarURL', 'avatarUrl', 'ProfileImage']) ? String(getProp(item, ['AvatarURL', 'avatarUrl', 'ProfileImage'])) : undefined,
+          profilePictureUrl: cleanProfilePictureUrl(getProp(item, AVATAR_KEYS)),
+          avatarUrl: cleanProfilePictureUrl(getProp(item, AVATAR_KEYS)),
           lastLogin: getProp(item, ['LastLogin', 'lastLogin']) ? String(getProp(item, ['LastLogin', 'lastLogin'])) : undefined,
           createdAt: String(getProp(item, ['CreatedAt', 'createdAt', 'Created At']) || new Date().toISOString()),
           updatedAt: String(getProp(item, ['UpdatedAt', 'updatedAt', 'Updated At']) || new Date().toISOString())
@@ -2050,11 +2080,19 @@ export const sheetsService = {
     if (!url) return false;
     const cleanedUrl = resolveUrl(url);
     try {
+      const pic = cleanProfilePictureUrl(account.profilePictureUrl || account.avatarUrl) || '';
       await fetch(cleanedUrl, {
         method: 'POST',
         mode: 'no-cors',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'saveStaffAccount', account })
+        body: JSON.stringify({
+          action: 'saveStaffAccount',
+          account: {
+            ...account,
+            profilePictureUrl: pic,
+            avatarUrl: pic
+          }
+        })
       });
       return true;
     } catch (error) {
@@ -2070,11 +2108,19 @@ export const sheetsService = {
     if (!url) return false;
     const cleanedUrl = resolveUrl(url);
     try {
+      const sanitized = accounts.map(a => {
+        const pic = cleanProfilePictureUrl(a.profilePictureUrl || a.avatarUrl) || '';
+        return {
+          ...a,
+          profilePictureUrl: pic,
+          avatarUrl: pic
+        };
+      });
       await fetch(cleanedUrl, {
         method: 'POST',
         mode: 'no-cors',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'saveStaffAccountsBatch', accounts })
+        body: JSON.stringify({ action: 'saveStaffAccountsBatch', accounts: sanitized })
       });
       return true;
     } catch (error) {
@@ -3003,6 +3049,8 @@ export const sheetsService = {
             status = isPortalOrder ? 'Pending Approval' : 'Pending';
           } else if (status === 'Pending Confirmation' || status === 'Pending Review') {
             status = 'Pending Approval';
+          } else if (status === 'To Ship / To Deliver / To Pickup') {
+            status = 'Shipped';
           }
 
           return {
@@ -3144,7 +3192,7 @@ export const sheetsService = {
           orderId: getProp(item, ['OrderID', 'orderId', 'Order ID']) ? String(getProp(item, ['OrderID', 'orderId', 'Order ID'])) : undefined,
           orderNumber: getProp(item, ['OrderNumber', 'orderNumber', 'Order Number']) ? String(getProp(item, ['OrderNumber', 'orderNumber', 'Order Number'])) : undefined,
           source: (getProp(item, ['Source', 'source']) || 'Manual') as any,
-          status: (getProp(item, ['Status', 'status']) || 'Pending') as any,
+          status: ((raw => String(raw).trim() === 'To Ship / To Deliver / To Pickup' ? 'Shipped' : raw)(getProp(item, ['Status', 'status']) || 'Pending')) as any,
           position: Number(getProp(item, ['Position', 'position']) || 0),
           values: parseObjectProp(getProp(item, ['ValuesJSON', 'values', 'Values', 'valuesJSON'])) || {},
           items: parseJobItems(getProp(item, ['ItemsJSON', 'items', 'Items'])),
@@ -3283,6 +3331,8 @@ export const sheetsService = {
           breakMinutes: getProp(item, ['BreakMinutes', 'breakMinutes', 'Break Minutes', 'BreakDuration']) !== undefined
             ? Number(getProp(item, ['BreakMinutes', 'breakMinutes', 'Break Minutes', 'BreakDuration']))
             : 60,
+          profilePictureUrl: cleanProfilePictureUrl(getProp(item, AVATAR_KEYS)),
+          avatarUrl: cleanProfilePictureUrl(getProp(item, AVATAR_KEYS)),
           createdAt: String(getProp(item, ['CreatedAt', 'createdAt', 'Created At']) || new Date().toISOString()),
           updatedAt: String(getProp(item, ['UpdatedAt', 'updatedAt', 'Updated At']) || new Date().toISOString())
         }));
@@ -3301,7 +3351,8 @@ export const sheetsService = {
           status: (getProp(item, ['Status', 'status']) || 'Active') as any,
           email: getProp(item, ['Email', 'email']) ? String(getProp(item, ['Email', 'email'])) : undefined,
           phone: getProp(item, ['Phone', 'phone', 'ContactNumber']) ? String(getProp(item, ['Phone', 'phone', 'ContactNumber'])) : undefined,
-          avatarUrl: getProp(item, ['AvatarURL', 'avatarUrl', 'ProfileImage']) ? String(getProp(item, ['AvatarURL', 'avatarUrl', 'ProfileImage'])) : undefined,
+          profilePictureUrl: cleanProfilePictureUrl(getProp(item, AVATAR_KEYS)),
+          avatarUrl: cleanProfilePictureUrl(getProp(item, AVATAR_KEYS)),
           lastLogin: getProp(item, ['LastLogin', 'lastLogin']) ? String(getProp(item, ['LastLogin', 'lastLogin'])) : undefined,
           createdAt: String(getProp(item, ['CreatedAt', 'createdAt', 'Created At']) || new Date().toISOString()),
           updatedAt: String(getProp(item, ['UpdatedAt', 'updatedAt', 'Updated At']) || new Date().toISOString())

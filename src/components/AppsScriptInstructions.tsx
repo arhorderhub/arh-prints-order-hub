@@ -441,6 +441,19 @@ function getMapValueByHeader(map, header) {
     if (map.hasOwnProperty("Color")) return map["Color"];
     if (map.hasOwnProperty("Colour")) return map["Colour"];
   }
+  if (normHeader === "profilepictureurl" || normHeader === "avatarurl" || normHeader === "profilepicture" || normHeader === "avatar" || normHeader === "profileimage" || normHeader === "photo" || normHeader === "picture" || normHeader === "profilepic") {
+    if (map.hasOwnProperty("ProfilePictureUrl")) return map["ProfilePictureUrl"];
+    if (map.hasOwnProperty("Avatar URL")) return map["Avatar URL"];
+    if (map.hasOwnProperty("AvatarURL")) return map["AvatarURL"];
+    if (map.hasOwnProperty("Profile Picture")) return map["Profile Picture"];
+    if (map.hasOwnProperty("Profile Picture URL")) return map["Profile Picture URL"];
+    if (map.hasOwnProperty("profilePictureUrl")) return map["profilePictureUrl"];
+    if (map.hasOwnProperty("avatarUrl")) return map["avatarUrl"];
+    if (map.hasOwnProperty("Avatar")) return map["Avatar"];
+    if (map.hasOwnProperty("ProfileImage")) return map["ProfileImage"];
+    if (map.hasOwnProperty("Photo")) return map["Photo"];
+    if (map.hasOwnProperty("Picture")) return map["Picture"];
+  }
   
   for (var key in map) {
     if (map.hasOwnProperty(key)) {
@@ -471,8 +484,8 @@ function initSheets(ss) {
     "JobColumns": ["Column ID", "Name", "Type", "Position", "Required", "Is System Field", "Is Hidden", "Options", "Created Date"],
     "JobItemColumns": ["Column ID", "Name", "Type", "Position", "Required", "Is System Field", "Is Hidden", "Calculation", "Options"],
     "JobComments": ["Comment ID", "Job ID", "User ID", "User Name", "Comment", "Created At", "Updated At"],
-    "Staff": ["Staff ID", "Full Name", "Position", "Department", "Employment Status", "Date Started", "Salary Type", "Basic Salary", "Allowances", "Other Compensation", "Notes", "Status", "Created At", "Updated At"],
-    "StaffAccounts": ["Account ID", "Staff ID", "Name", "Username", "Passcode", "Role", "Status", "Email", "Phone", "Avatar URL", "Last Login", "Created At", "Updated At"],
+    "Staff": ["Staff ID", "Full Name", "Position", "Department", "Employment Status", "Date Started", "Salary Type", "Basic Salary", "Allowances", "Other Compensation", "Notes", "Status", "ProfilePictureUrl", "Created At", "Updated At"],
+    "StaffAccounts": ["Account ID", "Staff ID", "Name", "Username", "Passcode", "Role", "Status", "Email", "Phone", "ProfilePictureUrl", "Avatar URL", "Last Login", "Created At", "Updated At"],
     "Attendance": ["Attendance ID", "Staff ID", "Staff Name", "Date", "Clock In", "Clock Out", "Total Hours", "Status", "Notes", "Created At", "Updated At"],
     "Payroll": ["Payroll ID", "Staff ID", "Staff Name", "Position", "Department", "Pay Period Start", "Pay Period End", "Pay Date", "Basic Pay", "Allowances", "Other Earnings", "Gross Pay", "Deductions", "Itemized Deductions JSON", "Total Deductions", "Net Pay", "Status", "Notes", "Created At", "Updated At"],
     "Expenses": ["Expense ID", "Expense Name", "Category", "Expense Type", "Amount", "Expense Date", "Payment Status", "Payment Date", "Vendor", "Reference Number", "Notes", "Recurring Expense ID", "Payroll ID", "Created At", "Updated At"],
@@ -1751,7 +1764,7 @@ function saveJobItemColumns(ss, columns) {
 
 function saveStaff(ss, staff) {
   var sheet = ss.getSheetByName("Staff");
-  var expectedHeaders = ["Staff ID", "Full Name", "Position", "Department", "Employment Status", "Date Started", "Salary Type", "Basic Salary", "Allowances", "Other Compensation", "Notes", "Status", "Created At", "Updated At"];
+  var expectedHeaders = ["Staff ID", "Full Name", "Position", "Department", "Employment Status", "Date Started", "Salary Type", "Basic Salary", "Allowances", "Other Compensation", "Notes", "Status", "ProfilePictureUrl", "Created At", "Updated At"];
   var data = ensureHeaders(sheet, expectedHeaders);
   var headers = data[0];
 
@@ -1776,6 +1789,7 @@ function saveStaff(ss, staff) {
     }
   }
 
+  var staffPic = staff.profilePictureUrl || staff.avatarUrl || "";
   var staffMap = {
     "Staff ID": targetId,
     "Full Name": staff.fullName || staff.name || "",
@@ -1789,6 +1803,12 @@ function saveStaff(ss, staff) {
     "Other Compensation": staff.otherCompensation !== undefined ? Number(staff.otherCompensation) : 0,
     "Notes": staff.notes || "",
     "Status": staff.status || "Active",
+    "ProfilePictureUrl": staffPic,
+    "Avatar URL": staffPic,
+    "Avatar": staffPic,
+    "Profile Picture": staffPic,
+    "ProfileImage": staffPic,
+    "Photo": staffPic,
     "Created At": staff.createdAt || new Date().toISOString(),
     "Updated At": staff.updatedAt || new Date().toISOString()
   };
@@ -2193,7 +2213,7 @@ function saveSalesGoalsBatch(ss, goals) {
 
 function saveStaffAccount(ss, account) {
   var sheet = ss.getSheetByName("StaffAccounts");
-  var expectedHeaders = ["Account ID", "Staff ID", "Name", "Username", "Passcode", "Role", "Status", "Email", "Phone", "Avatar URL", "Last Login", "Created At", "Updated At"];
+  var expectedHeaders = ["Account ID", "Staff ID", "Name", "Username", "Passcode", "Role", "Status", "Email", "Phone", "ProfilePictureUrl", "Avatar URL", "Last Login", "Created At", "Updated At"];
   var data = ensureHeaders(sheet, expectedHeaders);
   var headers = data[0];
 
@@ -2218,6 +2238,7 @@ function saveStaffAccount(ss, account) {
     }
   }
 
+  var picUrl = account.profilePictureUrl || account.avatarUrl || "";
   var accMap = {
     "Account ID": targetId,
     "Staff ID": account.staffId || "",
@@ -2228,7 +2249,12 @@ function saveStaffAccount(ss, account) {
     "Status": account.status || "Active",
     "Email": account.email || "",
     "Phone": account.phone || "",
-    "Avatar URL": account.avatarUrl || "",
+    "ProfilePictureUrl": picUrl,
+    "Avatar URL": picUrl,
+    "Avatar": picUrl,
+    "Profile Picture": picUrl,
+    "ProfileImage": picUrl,
+    "Photo": picUrl,
     "Last Login": account.lastLogin || "",
     "Created At": account.createdAt || new Date().toISOString(),
     "Updated At": account.updatedAt || new Date().toISOString()
