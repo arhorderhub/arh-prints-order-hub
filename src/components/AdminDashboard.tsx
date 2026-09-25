@@ -93,7 +93,8 @@ import {
   Menu,
   LogOut,
   Kanban,
-  Target
+  Target,
+  MessageSquare
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import ClientDashboardModal from './ClientDashboardModal';
@@ -102,7 +103,8 @@ import QuoteBuilder from './QuoteBuilder';
 import { AdminAppBranding } from './AdminAppBranding';
 import SalesGoalsSection from './SalesGoalsSection';
 import SalesGoalsSettingsModal from './SalesGoalsSettingsModal';
-import { SalesGoalRecord } from '../types';
+import ChatView from './chat/ChatView';
+import { SalesGoalRecord, ChatConversation, ChatMessage } from '../types';
 
 interface AdminDashboardProps {
   products: Product[];
@@ -167,7 +169,9 @@ interface AdminDashboardProps {
   onForceSyncAll: () => Promise<boolean>;
   onPullFromSheets?: () => Promise<void>;
   isSyncingSheets?: boolean;
-  initialTab?: 'jobs' | 'clients' | 'catalog' | 'orders' | 'staff' | 'expenses' | 'financial-overview' | 'analytics' | 'sales-goals' | 'receipt' | 'quotes' | 'settings' | 'sync';
+  initialTab?: 'jobs' | 'clients' | 'catalog' | 'orders' | 'staff' | 'expenses' | 'financial-overview' | 'analytics' | 'sales-goals' | 'receipt' | 'quotes' | 'settings' | 'sync' | 'chat';
+  activeTab?: 'jobs' | 'clients' | 'catalog' | 'orders' | 'staff' | 'expenses' | 'financial-overview' | 'analytics' | 'sales-goals' | 'receipt' | 'quotes' | 'settings' | 'sync' | 'chat';
+  onTabChange?: (tab: 'jobs' | 'clients' | 'catalog' | 'orders' | 'staff' | 'expenses' | 'financial-overview' | 'analytics' | 'sales-goals' | 'receipt' | 'quotes' | 'settings' | 'sync' | 'chat') => void;
   initialCatalogSection?: 'catalog' | 'enquiries';
   highlightEnquiryNumber?: string;
   highlightOrderNumber?: string;
@@ -177,6 +181,16 @@ interface AdminDashboardProps {
   onToggleMobileNav?: (open?: boolean) => void;
   onLogout?: () => void;
   currentUser?: AuthUser;
+  chatConversations?: ChatConversation[];
+  chatMessages?: ChatMessage[];
+  onSendMessage?: (conversationId: string, text: string) => void;
+  onToggleReaction?: (messageId: string, emoji: string) => void;
+  onDeleteChatMessage?: (messageId: string) => void;
+  onCreateChatConversation?: (newConv: ChatConversation) => void;
+  onMarkChatRead?: (conversationId: string) => void;
+  unreadChatCount?: number;
+  onActiveChatConversationChange?: (id: string | null) => void;
+  onDeleteChatConversation?: (conversationId: string) => void;
 }
 
 export default function AdminDashboard({
@@ -243,6 +257,8 @@ export default function AdminDashboard({
   onPullFromSheets,
   isSyncingSheets,
   initialTab,
+  activeTab,
+  onTabChange,
   initialCatalogSection,
   highlightEnquiryNumber,
   highlightOrderNumber,
@@ -251,9 +267,19 @@ export default function AdminDashboard({
   isMobileNavOpen,
   onToggleMobileNav,
   onLogout,
-  currentUser
+  currentUser,
+  chatConversations = [],
+  chatMessages = [],
+  onSendMessage,
+  onToggleReaction,
+  onDeleteChatMessage,
+  onCreateChatConversation,
+  onMarkChatRead,
+  unreadChatCount = 0,
+  onActiveChatConversationChange,
+  onDeleteChatConversation
 }: AdminDashboardProps) {
-  const [adminTab, setAdminTab] = useState<'jobs' | 'clients' | 'catalog' | 'orders' | 'staff' | 'expenses' | 'financial-overview' | 'analytics' | 'sales-goals' | 'receipt' | 'quotes' | 'settings' | 'sync'>(initialTab || 'jobs');
+  const [adminTab, setAdminTab] = useState<'jobs' | 'clients' | 'catalog' | 'orders' | 'staff' | 'expenses' | 'financial-overview' | 'analytics' | 'sales-goals' | 'receipt' | 'quotes' | 'settings' | 'sync' | 'chat'>(activeTab || initialTab || 'jobs');
   const [showSalesGoalsModal, setShowSalesGoalsModal] = useState(false);
   const [salesGoalsModalYear, setSalesGoalsModalYear] = useState<number>(new Date().getFullYear());
 
@@ -277,21 +303,46 @@ export default function AdminDashboard({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [isDrawerOpen]);
 
+  const handleSelectTab = (tab: 'jobs' | 'clients' | 'catalog' | 'orders' | 'staff' | 'expenses' | 'financial-overview' | 'analytics' | 'sales-goals' | 'receipt' | 'quotes' | 'settings' | 'sync' | 'chat') => {
+    setAdminTab(tab);
+    if (onTabChange) {
+      onTabChange(tab);
+    }
+  };
+
   React.useEffect(() => {
-    if (initialTab) {
+    if (activeTab && activeTab !== adminTab) {
+      setAdminTab(activeTab);
+      if (activeTab === 'chat') {
+        setSelectedOrder(null);
+        setShowProductForm(false);
+        setShowClientForm(false);
+        setDrawerOpen(false);
+      }
+    }
+  }, [activeTab]);
+
+  React.useEffect(() => {
+    if (initialTab && initialTab !== adminTab) {
       setAdminTab(initialTab);
+      if (initialTab === 'chat') {
+        setSelectedOrder(null);
+        setShowProductForm(false);
+        setShowClientForm(false);
+        setDrawerOpen(false);
+      }
     }
   }, [initialTab]);
 
   React.useEffect(() => {
     if (highlightJobId) {
-      setAdminTab('jobs');
+      handleSelectTab('jobs');
     }
   }, [highlightJobId]);
 
   React.useEffect(() => {
     if (highlightOrderNumber || highlightOrderId) {
-      setAdminTab('orders');
+      handleSelectTab('orders');
       const searchVal = highlightOrderNumber || highlightOrderId || '';
       setOrderSearch(searchVal);
       setFilterStatus('all');
@@ -792,6 +843,7 @@ export default function AdminDashboard({
 
   const navItems = [
     { id: 'jobs', label: 'Job Management', icon: Kanban, count: jobs.length },
+    { id: 'chat', label: 'Messages & Chat', icon: MessageSquare, count: unreadChatCount || null },
     { id: 'clients', label: 'Client Accounts', icon: Users, count: companies.length },
     { id: 'catalog', label: 'ARH Products', icon: Layers, count: catalogProducts.length },
     { id: 'orders', label: 'Orders', icon: ClipboardList, count: directCompanyOrders.length },
@@ -867,7 +919,7 @@ export default function AdminDashboard({
                         key={item.id}
                         type="button"
                         onClick={() => {
-                          setAdminTab(item.id as any);
+                          handleSelectTab(item.id as any);
                           setShowClientForm(false);
                           setShowProductForm(false);
                           setDrawerOpen(false);
@@ -947,7 +999,7 @@ export default function AdminDashboard({
           onSaveJobColumns={onSaveJobColumns}
           onSaveJobItemColumns={onSaveJobItemColumns}
           onSelectOrder={(ord) => {
-            setAdminTab('orders');
+            handleSelectTab('orders');
             setSelectedOrder(ord);
           }}
           currencySymbol={currencySymbol}
@@ -2209,6 +2261,34 @@ export default function AdminDashboard({
           />
         </div>
       )}
+
+      {/* Messages & Chat Tab */}
+      {adminTab === 'chat' && (
+        <div className="bg-white border-2 border-black rounded-3xl p-4 sm:p-6 shadow-xs animate-fade-in">
+          <ChatView
+            currentUser={currentUser || {
+              id: 'admin',
+              username: 'admin',
+              name: 'ARH',
+              role: 'admin',
+              profilePictureUrl: systemSettings.logoUrl
+            }}
+            conversations={chatConversations}
+            messages={chatMessages}
+            staffMembers={staff}
+            staffAccounts={staffAccounts}
+            companies={companies}
+            systemSettings={systemSettings}
+            onSendMessage={onSendMessage || (() => {})}
+            onToggleReaction={onToggleReaction || (() => {})}
+            onDeleteMessage={onDeleteChatMessage || (() => {})}
+            onCreateConversation={onCreateChatConversation || (() => {})}
+            onMarkRead={onMarkChatRead || (() => {})}
+            onActiveConversationChange={onActiveChatConversationChange}
+            onDeleteConversation={onDeleteChatConversation}
+          />
+        </div>
+      )}
       </div>
 
       {/* Full Order Details Modal */}
@@ -2360,7 +2440,7 @@ export default function AdminDashboard({
                           type="button"
                           onClick={() => {
                             setSelectedOrder(null);
-                            setAdminTab('jobs');
+                            handleSelectTab('jobs');
                           }}
                           className="bg-black hover:bg-neutral-800 text-white font-bold px-3 py-1.5 rounded-xl text-xs flex items-center gap-1.5 cursor-pointer shadow-xs"
                           id="btn-open-linked-job"

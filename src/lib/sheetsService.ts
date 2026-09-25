@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { Order, Product, CompanyProfile, CatalogProduct, QuoteEnquiry, ColorOption, OrderPortal, OrderItem, AppNotification, Job, JobColumn, JobItem, JobItemColumn, JobActivity, JobComment, StaffMember, StaffAccount, AttendanceRecord, PayrollRecord, ExpenseRecord, ExpenseCategory, RecurringExpenseRule, SalesGoalRecord } from '../types';
+import { Order, Product, CompanyProfile, CatalogProduct, QuoteEnquiry, ColorOption, OrderPortal, OrderItem, AppNotification, Job, JobColumn, JobItem, JobItemColumn, JobActivity, JobComment, StaffMember, StaffAccount, AttendanceRecord, PayrollRecord, ExpenseRecord, ExpenseCategory, RecurringExpenseRule, SalesGoalRecord, ChatConversation, ChatMessage } from '../types';
 import { INITIAL_CATALOG_PRODUCTS } from '../data/initialCatalog';
 import { parseColorList, resolveColorHex } from '../utils/colorUtils';
 import { normalizeAttendanceDate, cleanClockOut, cleanClockIn, calculateHoursWorked } from '../utils/attendanceUtils';
@@ -74,6 +74,8 @@ export interface AllSheetsData {
   expenseCategories: ExpenseCategory[] | null;
   recurringExpenses: RecurringExpenseRule[] | null;
   salesGoals: SalesGoalRecord[] | null;
+  chatConversations: ChatConversation[] | null;
+  chatMessages: ChatMessage[] | null;
 }
 
 function parseArrayProp(val: any): string[] | undefined {
@@ -405,6 +407,118 @@ function parseSalesGoalRecord(item: any): SalesGoalRecord | null {
     createdAt,
     updatedAt,
     updatedBy
+  };
+}
+
+const SEED_CHAT_CONVERSATION_IDS = new Set<string>([
+  'conv-group-studio-production'
+]);
+
+const SEED_CHAT_MESSAGE_IDS = new Set<string>([
+  'msg-grp-1', 'msg-grp-2', 'msg-grp-3',
+  'msg-dir-1', 'msg-dir-2',
+  'msg-client-1', 'msg-clt-1', 'msg-clt-2'
+]);
+
+function parseChatConversation(raw: any): ChatConversation | null {
+  if (!raw) return null;
+  const id = String(getProp(raw, ['Conversation ID', 'conversationId', 'id', 'ConversationID', 'Id']) || '').trim();
+  if (!id || SEED_CHAT_CONVERSATION_IDS.has(id)) return null;
+
+  const rawParticipants = getProp(raw, ['Participant IDs', 'participantIds', 'participants', 'Participants', 'ParticipantIDs']);
+  let participantIds: string[] = [];
+  if (Array.isArray(rawParticipants)) {
+    participantIds = rawParticipants.map(String).map(s => s.trim()).filter(Boolean);
+  } else if (typeof rawParticipants === 'string') {
+    if (rawParticipants.startsWith('[') && rawParticipants.endsWith(']')) {
+      try {
+        const parsed = JSON.parse(rawParticipants);
+        if (Array.isArray(parsed)) participantIds = parsed.map(String);
+      } catch (e) {
+        // ignore
+      }
+    }
+    if (participantIds.length === 0) {
+      participantIds = rawParticipants.split(/[,;|]/).map(s => s.trim()).filter(Boolean);
+    }
+  }
+
+  const rawType = String(getProp(raw, ['Type', 'type']) || 'direct').trim().toLowerCase();
+  const type: 'direct' | 'group' | 'client_admin' =
+    rawType === 'group' ? 'group' : rawType === 'client_admin' ? 'client_admin' : 'direct';
+
+  return {
+    id,
+    type,
+    title: String(getProp(raw, ['Title', 'title', 'Name', 'name']) || '').trim(),
+    participantIds,
+    companyId: getProp(raw, ['Company ID', 'companyId', 'CompanyId']) ? String(getProp(raw, ['Company ID', 'companyId', 'CompanyId'])).trim() : undefined,
+    lastMessageText: getProp(raw, ['Last Message Text', 'lastMessageText']) ? String(getProp(raw, ['Last Message Text', 'lastMessageText'])) : undefined,
+    lastMessageTimestamp: getProp(raw, ['Last Message Timestamp', 'lastMessageTimestamp']) ? String(getProp(raw, ['Last Message Timestamp', 'lastMessageTimestamp'])) : undefined,
+    lastMessageSenderId: getProp(raw, ['Last Message Sender ID', 'lastMessageSenderId']) ? String(getProp(raw, ['Last Message Sender ID', 'lastMessageSenderId'])) : undefined,
+    lastMessageSenderName: getProp(raw, ['Last Message Sender Name', 'lastMessageSenderName']) ? String(getProp(raw, ['Last Message Sender Name', 'lastMessageSenderName'])) : undefined,
+    createdBy: String(getProp(raw, ['Created By', 'createdBy']) || 'admin'),
+    createdAt: String(getProp(raw, ['Created At', 'createdAt']) || new Date().toISOString()),
+    updatedAt: String(getProp(raw, ['Updated At', 'updatedAt']) || new Date().toISOString())
+  };
+}
+
+function parseChatMessage(raw: any): ChatMessage | null {
+  if (!raw) return null;
+  const id = String(getProp(raw, ['Message ID', 'messageId', 'id', 'MessageID', 'Id']) || '').trim();
+  const conversationId = String(getProp(raw, ['Conversation ID', 'conversationId', 'ConversationID']) || '').trim();
+  if (!id || !conversationId || SEED_CHAT_MESSAGE_IDS.has(id) || SEED_CHAT_CONVERSATION_IDS.has(conversationId)) return null;
+
+  // Ignore deleted messages
+  const status = String(getProp(raw, ['Status', 'status']) || '').trim().toLowerCase();
+  const deletedAt = getProp(raw, ['Deleted At', 'deletedAt', 'DeletedAt']);
+  const isDeleted = getProp(raw, ['isDeleted', 'IsDeleted']);
+  if (status === 'deleted' || deletedAt || isDeleted === true || isDeleted === 'true') return null;
+
+  const rawReadBy = getProp(raw, ['Read By', 'readBy', 'ReadBy']);
+  let readBy: string[] = [];
+  if (Array.isArray(rawReadBy)) {
+    readBy = rawReadBy.map(String).map(s => s.trim()).filter(Boolean);
+  } else if (typeof rawReadBy === 'string') {
+    if (rawReadBy.startsWith('[') && rawReadBy.endsWith(']')) {
+      try {
+        const parsed = JSON.parse(rawReadBy);
+        if (Array.isArray(parsed)) readBy = parsed.map(String);
+      } catch (e) {}
+    }
+    if (readBy.length === 0) {
+      readBy = rawReadBy.split(/[,;|]/).map(s => s.trim()).filter(Boolean);
+    }
+  }
+
+  let reactions: Record<string, string[]> | undefined;
+  const rawReactions = getProp(raw, ['Reactions JSON', 'reactions', 'Reactions']);
+  if (rawReactions) {
+    if (typeof rawReactions === 'object' && !Array.isArray(rawReactions)) {
+      reactions = rawReactions;
+    } else if (typeof rawReactions === 'string') {
+      try {
+        const parsed = JSON.parse(rawReactions);
+        if (typeof parsed === 'object') reactions = parsed;
+      } catch (e) {}
+    }
+  }
+
+  const rawRole = String(getProp(raw, ['Sender Role', 'senderRole', 'Role', 'role']) || 'staff').toLowerCase();
+  const senderRole: 'admin' | 'staff' | 'client' =
+    rawRole === 'admin' ? 'admin' : rawRole === 'client' ? 'client' : 'staff';
+
+  return {
+    id,
+    conversationId,
+    senderId: String(getProp(raw, ['Sender ID', 'senderId', 'SenderId']) || 'unknown').trim(),
+    senderName: String(getProp(raw, ['Sender Name', 'senderName', 'SenderName']) || 'User').trim(),
+    senderRole,
+    senderAvatarUrl: getProp(raw, AVATAR_KEYS) ? String(getProp(raw, AVATAR_KEYS)) : undefined,
+    text: String(getProp(raw, ['Text', 'text', 'Message', 'message', 'Content', 'content']) || ''),
+    timestamp: String(getProp(raw, ['Timestamp', 'timestamp', 'Time', 'time', 'Created At', 'createdAt']) || new Date().toISOString()),
+    readBy,
+    reactions
   };
 }
 
@@ -2977,6 +3091,289 @@ export const sheetsService = {
   },
 
   /**
+   * Fetch all Chat Conversations from Google Sheets.
+   */
+  async fetchChatConversations(url: string): Promise<ChatConversation[] | null> {
+    if (!url) return null;
+    const cleanedUrl = resolveUrl(url);
+    try {
+      const response = await fetch(`${cleanedUrl}?action=getChatConversations`, {
+        method: 'GET',
+        headers: { 'Accept': 'application/json' },
+      });
+      if (!response.ok) return null;
+      const rawData = await response.json();
+      if (Array.isArray(rawData)) {
+        return rawData
+          .map(parseChatConversation)
+          .filter((c): c is ChatConversation => c !== null);
+      }
+      return null;
+    } catch (error) {
+      console.warn('Google Sheets sync notice (fetchChatConversations):', error);
+      return null;
+    }
+  },
+
+  /**
+   * Fetch Chat Messages from Google Sheets.
+   */
+  async fetchChatMessages(url: string, conversationId?: string): Promise<ChatMessage[] | null> {
+    if (!url) return null;
+    const cleanedUrl = resolveUrl(url);
+    try {
+      const endpoint = conversationId
+        ? `${cleanedUrl}?action=getChatMessages&conversationId=${encodeURIComponent(conversationId)}`
+        : `${cleanedUrl}?action=getChatMessages`;
+      const response = await fetch(endpoint, {
+        method: 'GET',
+        headers: { 'Accept': 'application/json' },
+      });
+      if (!response.ok) return null;
+      const rawData = await response.json();
+      if (Array.isArray(rawData)) {
+        return rawData
+          .map(parseChatMessage)
+          .filter((m): m is ChatMessage => m !== null);
+      }
+      return null;
+    } catch (error) {
+      console.warn('Google Sheets sync notice (fetchChatMessages):', error);
+      return null;
+    }
+  },
+
+  /**
+   * Lightweight Chat-only sync from Google Sheets.
+   * Returns updated conversations and messages in a single fast GET request.
+   */
+  async fetchChatUpdates(
+    url: string,
+    conversationId?: string,
+    since?: string
+  ): Promise<{ conversations: ChatConversation[]; messages: ChatMessage[]; timestamp?: string } | null> {
+    if (!url) return null;
+    const cleanedUrl = resolveUrl(url);
+    try {
+      let endpoint = `${cleanedUrl}?action=getChatUpdates`;
+      if (conversationId) {
+        endpoint += `&conversationId=${encodeURIComponent(conversationId)}`;
+      }
+      if (since) {
+        endpoint += `&since=${encodeURIComponent(since)}`;
+      }
+      const response = await fetch(endpoint, {
+        method: 'GET',
+        headers: { 'Accept': 'application/json' },
+      });
+      if (!response.ok) return null;
+      const data = await response.json();
+      if (!data) return null;
+
+      const rawConvs = data.conversations || data.ChatConversations;
+      const rawMsgs = data.messages || data.ChatMessages;
+
+      const conversations = Array.isArray(rawConvs)
+        ? rawConvs.map(parseChatConversation).filter((c): c is ChatConversation => c !== null)
+        : [];
+
+      const messages = Array.isArray(rawMsgs)
+        ? rawMsgs.map(parseChatMessage).filter((m): m is ChatMessage => m !== null)
+        : [];
+
+      return {
+        conversations,
+        messages,
+        timestamp: data.timestamp
+      };
+    } catch (error) {
+      console.warn('Google Sheets sync notice (fetchChatUpdates):', error);
+      return null;
+    }
+  },
+
+  /**
+   * Save a single Chat Conversation to Google Sheets.
+   */
+  async saveChatConversation(url: string, conversation: ChatConversation): Promise<boolean> {
+    if (!url) return false;
+    const cleanedUrl = resolveUrl(url);
+    try {
+      await fetch(cleanedUrl, {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'saveChatConversation',
+          conversation: {
+            ...conversation,
+            participantIds: conversation.participantIds.join(','),
+            updatedAt: new Date().toISOString()
+          },
+          chatConversation: conversation
+        })
+      });
+      return true;
+    } catch (error) {
+      console.warn('Google Sheets sync notice (saveChatConversation):', error);
+      return false;
+    }
+  },
+
+  /**
+   * Save a single Chat Message to Google Sheets.
+   */
+  async saveChatMessage(url: string, message: ChatMessage): Promise<boolean> {
+    if (!url) return false;
+    const cleanedUrl = resolveUrl(url);
+    try {
+      await fetch(cleanedUrl, {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'saveChatMessage',
+          message: {
+            ...message,
+            readBy: Array.isArray(message.readBy) ? message.readBy.join(',') : '',
+            reactions: message.reactions ? JSON.stringify(message.reactions) : ''
+          },
+          chatMessage: message
+        })
+      });
+      return true;
+    } catch (error) {
+      console.warn('Google Sheets sync notice (saveChatMessage):', error);
+      return false;
+    }
+  },
+
+  /**
+   * Mark all messages in a conversation as read by the user in Google Sheets.
+   */
+  async markChatRead(url: string, conversationId: string, userId: string): Promise<boolean> {
+    if (!url || !conversationId || !userId) return false;
+    const cleanedUrl = resolveUrl(url);
+    try {
+      await fetch(cleanedUrl, {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'markChatRead',
+          conversationId,
+          userId
+        })
+      });
+      return true;
+    } catch (error) {
+      console.warn('Google Sheets sync notice (markChatRead):', error);
+      return false;
+    }
+  },
+
+  /**
+   * Delete a chat message in Google Sheets.
+   */
+  async deleteChatMessage(url: string, messageId: string): Promise<boolean> {
+    if (!url || !messageId) return false;
+    const cleanedUrl = resolveUrl(url);
+    try {
+      await fetch(cleanedUrl, {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'deleteChatMessage',
+          messageId,
+          id: messageId
+        })
+      });
+      return true;
+    } catch (error) {
+      console.warn('Google Sheets sync notice (deleteChatMessage):', error);
+      return false;
+    }
+  },
+
+  /**
+   * Delete an entire chat conversation and its messages in Google Sheets.
+   */
+  async deleteChatConversation(url: string, conversationId: string): Promise<boolean> {
+    if (!url || !conversationId) return false;
+    const cleanedUrl = resolveUrl(url);
+    try {
+      await fetch(cleanedUrl, {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'deleteChatConversation',
+          conversationId,
+          id: conversationId
+        })
+      });
+      return true;
+    } catch (error) {
+      console.warn('Google Sheets sync notice (deleteChatConversation):', error);
+      return false;
+    }
+  },
+
+  /**
+   * Save a batch of Chat Conversations to Google Sheets.
+   */
+  async saveChatConversationsBatch(url: string, conversations: ChatConversation[]): Promise<boolean> {
+    if (!url || !Array.isArray(conversations) || conversations.length === 0) return false;
+    const cleanedUrl = resolveUrl(url);
+    try {
+      await fetch(cleanedUrl, {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'saveChatConversationsBatch',
+          conversations: conversations.map(c => ({
+            ...c,
+            participantIds: Array.isArray(c.participantIds) ? c.participantIds.join(',') : String(c.participantIds || '')
+          }))
+        })
+      });
+      return true;
+    } catch (error) {
+      console.warn('Google Sheets sync notice (saveChatConversationsBatch):', error);
+      return false;
+    }
+  },
+
+  /**
+   * Save a batch of Chat Messages to Google Sheets.
+   */
+  async saveChatMessagesBatch(url: string, messages: ChatMessage[]): Promise<boolean> {
+    if (!url || !Array.isArray(messages) || messages.length === 0) return false;
+    const cleanedUrl = resolveUrl(url);
+    try {
+      await fetch(cleanedUrl, {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'saveChatMessagesBatch',
+          messages: messages.map(m => ({
+            ...m,
+            readBy: Array.isArray(m.readBy) ? m.readBy.join(',') : '',
+            reactions: m.reactions ? (typeof m.reactions === 'string' ? m.reactions : JSON.stringify(m.reactions)) : ''
+          }))
+        })
+      });
+      return true;
+    } catch (error) {
+      console.warn('Google Sheets sync notice (saveChatMessagesBatch):', error);
+      return false;
+    }
+  },
+
+  /**
    * Single-roundtrip bulk fetch of all database tables from Apps Script for fast sign-in & initial load sync.
    */
   async fetchAllData(url: string): Promise<AllSheetsData | null> {
@@ -3592,6 +3989,24 @@ export const sheetsService = {
         salesGoals = deduplicateSalesGoals(salesGoals);
       }
 
+      // Extract Chat Conversations
+      let chatConversations: ChatConversation[] | null = null;
+      const rawChatConversations = raw.chatConversations || raw.ChatConversations;
+      if (Array.isArray(rawChatConversations)) {
+        chatConversations = rawChatConversations
+          .map(parseChatConversation)
+          .filter((c): c is ChatConversation => c !== null);
+      }
+
+      // Extract Chat Messages
+      let chatMessages: ChatMessage[] | null = null;
+      const rawChatMessages = raw.chatMessages || raw.ChatMessages;
+      if (Array.isArray(rawChatMessages)) {
+        chatMessages = rawChatMessages
+          .map(parseChatMessage)
+          .filter((m): m is ChatMessage => m !== null);
+      }
+
       return {
         products,
         companies,
@@ -3614,7 +4029,9 @@ export const sheetsService = {
         expenses,
         expenseCategories,
         recurringExpenses,
-        salesGoals
+        salesGoals,
+        chatConversations,
+        chatMessages
       };
     } catch (err) {
       console.warn('Google Sheets fetchAllData notice:', err);
